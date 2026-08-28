@@ -5,29 +5,56 @@ import stat
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    QThread,
+    QMetaObject,
+)
+
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
+    QWidget,
+    QLabel,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
-    QHBoxLayout,
     QFormLayout,
     QGridLayout,
-    QLabel,
-    QWidget,
+    QSplitter,
+    QFrame,
 )
 
+from app.core.event_bus import EventBus
+from app.core.activity import ActivityTimeline
+
 from app.monitors.filesystem import FileSystemMonitor
-from app.session.current_directory import get_current_directory
+
+from app.process.session_worker import (
+    TerminalSessionWorker,
+)
+
+from app.process.focused_session import (
+    FocusedSession,
+)
+
+from app.visualizers.activity_timeline import (
+    ActivityTimelineWidget,
+)
+
+from app.visualizers.session_panel import (
+    TerminalSessionWidget,
+)
 
 
 # ============================================================
 # Configuration
 # ============================================================
 
-LAB_PATH = Path("/home/dev/LinuxLab")
+LAB_PATH = Path(
+    "/home/dev/LinuxLab"
+)
 
 
 # ============================================================
@@ -37,31 +64,148 @@ LAB_PATH = Path("/home/dev/LinuxLab")
 class MainWindow(QMainWindow):
 
     def __init__(self):
+
         super().__init__()
+
+        # ====================================================
+        # Window
+        # ====================================================
 
         self.setWindowTitle(
             "Linux Visual Learning Lab"
         )
 
-        self.resize(1250, 800)
+        self.resize(
+            1600,
+            900
+        )
 
         # ====================================================
-        # Main container
+        # Core state
+        # ====================================================
+
+        self.event_bus = EventBus()
+
+        self.activity_timeline = ActivityTimeline(
+            max_events=100
+        )
+
+        # ====================================================
+        # Focused terminal
+        # ====================================================
+
+        self.focused_session = FocusedSession()
+
+        # ====================================================
+        # Latest terminal-session snapshot
+        #
+        # Key:
+        #     PID
+        #
+        # Value:
+        #     TerminalSession
+        #
+        # This snapshot is supplied by the background worker.
+        # The GUI uses this as its terminal-session state source.
+        # ====================================================
+
+        self.session_snapshot = {}
+
+        # ====================================================
+        # Selected filesystem object
+        # ====================================================
+
+        self.selected_path = None
+
+        # ====================================================
+        # Terminal-session worker
+        # ====================================================
+
+        self.session_thread = QThread(
+            self
+        )
+
+        self.session_worker = TerminalSessionWorker(
+            interval_ms=500
+        )
+
+        self.session_worker.moveToThread(
+            self.session_thread
+        )
+
+        self.session_thread.started.connect(
+            self.session_worker.start
+        )
+
+        self.session_worker.event_detected.connect(
+            self.handle_session_event
+        )
+
+        self.session_worker.sessions_updated.connect(
+            self.handle_sessions_updated
+        )
+
+        self.session_worker.error.connect(
+            self.handle_session_worker_error
+        )
+
+        self.session_thread.finished.connect(
+            self.session_worker.deleteLater
+        )
+
+        # ====================================================
+        # Central widget
         # ====================================================
 
         central = QWidget()
-
-        main_layout = QVBoxLayout(
-            central
-        )
 
         self.setCentralWidget(
             central
         )
 
+        main_layout = QVBoxLayout(
+            central
+        )
+
+        main_layout.setContentsMargins(
+            10,
+            10,
+            10,
+            10
+        )
+
+        main_layout.setSpacing(
+            8
+        )
+
         # ====================================================
+        # TOP CONTEXT PANEL
+        # ====================================================
+
+        context_frame = QFrame()
+
+        context_frame.setFrameShape(
+            QFrame.Shape.StyledPanel
+        )
+
+        context_layout = QVBoxLayout(
+            context_frame
+        )
+
+        context_layout.setContentsMargins(
+            10,
+            8,
+            10,
+            8
+        )
+
+        context_layout.setSpacing(
+            4
+        )
+
+        # ----------------------------------------------------
         # Current location
-        # ====================================================
+        # ----------------------------------------------------
 
         self.location_label = QLabel(
             "📍 CURRENT LOCATION: unknown"
@@ -72,18 +216,17 @@ class MainWindow(QMainWindow):
             QLabel {
                 font-size: 18px;
                 font-weight: bold;
-                padding: 8px;
             }
             """
         )
 
-        main_layout.addWidget(
+        context_layout.addWidget(
             self.location_label
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # Breadcrumb
-        # ====================================================
+        # ----------------------------------------------------
 
         self.breadcrumb_label = QLabel(
             "/"
@@ -96,22 +239,23 @@ class MainWindow(QMainWindow):
         self.breadcrumb_label.setStyleSheet(
             """
             QLabel {
-                font-size: 14px;
-                padding: 4px 10px;
+                font-size: 13px;
             }
             """
         )
 
-        main_layout.addWidget(
+        context_layout.addWidget(
             self.breadcrumb_label
         )
 
-        # ====================================================
-        # Navigation information
-        # ====================================================
+        # ----------------------------------------------------
+        # Navigation
+        # ----------------------------------------------------
 
         self.navigation_label = QLabel(
-            "Parent: /"
+            "Parent: /    |    "
+            "Home: /    |    "
+            "Root: /"
         )
 
         self.navigation_label.setWordWrap(
@@ -121,19 +265,18 @@ class MainWindow(QMainWindow):
         self.navigation_label.setStyleSheet(
             """
             QLabel {
-                font-size: 13px;
-                padding: 4px 10px;
+                font-size: 12px;
             }
             """
         )
 
-        main_layout.addWidget(
+        context_layout.addWidget(
             self.navigation_label
         )
 
-        # ====================================================
+        # ----------------------------------------------------
         # Path anatomy
-        # ====================================================
+        # ----------------------------------------------------
 
         self.path_anatomy_label = QLabel(
             "Path anatomy: /"
@@ -146,30 +289,146 @@ class MainWindow(QMainWindow):
         self.path_anatomy_label.setStyleSheet(
             """
             QLabel {
-                font-size: 13px;
-                padding: 4px 10px;
+                font-size: 12px;
             }
             """
         )
 
-        main_layout.addWidget(
+        context_layout.addWidget(
             self.path_anatomy_label
         )
 
-        # ====================================================
-        # Main content
-        # ====================================================
-
-        content_layout = QHBoxLayout()
+        main_layout.addWidget(
+            context_frame
+        )
 
         # ====================================================
+        # MAIN WORKSPACE
+        # ====================================================
+
+        workspace_splitter = QSplitter(
+            Qt.Orientation.Horizontal
+        )
+
+        workspace_splitter.setChildrenCollapsible(
+            False
+        )
+
+        main_layout.addWidget(
+            workspace_splitter,
+            1
+        )
+
+        # ====================================================
+        # LEFT PANEL
+        # ====================================================
+
+        left_panel = QWidget()
+
+        left_layout = QVBoxLayout(
+            left_panel
+        )
+
+        left_layout.setContentsMargins(
+            0,
+            0,
+            0,
+            0
+        )
+
+        left_layout.setSpacing(
+            6
+        )
+
+        # ----------------------------------------------------
+        # Terminal title
+        # ----------------------------------------------------
+
+        session_title = QLabel(
+            "🖥 TERMINAL SESSIONS"
+        )
+
+        session_title.setStyleSheet(
+            """
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                padding: 4px;
+            }
+            """
+        )
+
+        left_layout.addWidget(
+            session_title
+        )
+
+        session_help = QLabel(
+            "Select a terminal to follow its location."
+        )
+
+        session_help.setStyleSheet(
+            """
+            QLabel {
+                font-size: 11px;
+                padding-left: 4px;
+                padding-bottom: 4px;
+            }
+            """
+        )
+
+        left_layout.addWidget(
+            session_help
+        )
+
+        # ----------------------------------------------------
+        # Terminal session widget
+        # ----------------------------------------------------
+
+        self.session_widget = (
+            TerminalSessionWidget()
+        )
+
+        self.session_widget.session_selected.connect(
+            self.handle_session_selected
+        )
+
+        left_layout.addWidget(
+            self.session_widget,
+            1
+        )
+
+        # ----------------------------------------------------
+        # Filesystem title
+        # ----------------------------------------------------
+
+        filesystem_title = QLabel(
+            "📁 LINUXLAB FILESYSTEM"
+        )
+
+        filesystem_title.setStyleSheet(
+            """
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                padding: 4px;
+            }
+            """
+        )
+
+        left_layout.addWidget(
+            filesystem_title
+        )
+
+        # ----------------------------------------------------
         # Filesystem tree
-        # ====================================================
+        # ----------------------------------------------------
 
         self.tree = QTreeWidget()
 
         self.tree.setHeaderLabels(
-            ["LinuxLab Filesystem"]
+            [
+                "LinuxLab Filesystem"
+            ]
         )
 
         self.tree.setAnimated(
@@ -178,31 +437,81 @@ class MainWindow(QMainWindow):
 
         self.tree.setColumnWidth(
             0,
-            500
+            420
         )
 
         self.tree.itemClicked.connect(
             self.show_file_details
         )
 
-        content_layout.addWidget(
+        left_layout.addWidget(
             self.tree,
-            2
+            3
+        )
+
+        workspace_splitter.addWidget(
+            left_panel
         )
 
         # ====================================================
-        # Details panel
+        # CENTER PANEL
         # ====================================================
 
-        details_widget = QWidget()
+        details_panel = QWidget()
 
-        details_layout = QFormLayout(
-            details_widget
+        details_layout = QVBoxLayout(
+            details_panel
         )
 
-        # ====================================================
-        # Basic metadata
-        # ====================================================
+        details_layout.setContentsMargins(
+            5,
+            0,
+            5,
+            0
+        )
+
+        # ----------------------------------------------------
+        # Selected object title
+        # ----------------------------------------------------
+
+        details_title = QLabel(
+            "📄 SELECTED OBJECT"
+        )
+
+        details_title.setStyleSheet(
+            """
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                padding: 4px;
+            }
+            """
+        )
+
+        details_layout.addWidget(
+            details_title
+        )
+
+        # ----------------------------------------------------
+        # Metadata
+        # ----------------------------------------------------
+
+        metadata_widget = QWidget()
+
+        metadata_layout = QFormLayout(
+            metadata_widget
+        )
+
+        metadata_layout.setContentsMargins(
+            4,
+            4,
+            4,
+            4
+        )
+
+        metadata_layout.setSpacing(
+            5
+        )
 
         self.detail_name = QLabel("-")
         self.detail_type = QLabel("-")
@@ -224,83 +533,91 @@ class MainWindow(QMainWindow):
             True
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Name:",
             self.detail_name
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Type:",
             self.detail_type
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Path:",
             self.detail_path
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Parent:",
             self.detail_parent
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Name only:",
             self.detail_name_only
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Size:",
             self.detail_size
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Owner:",
             self.detail_owner
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Group:",
             self.detail_group
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Permissions:",
             self.detail_permissions
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Mode:",
             self.detail_mode
         )
 
-        details_layout.addRow(
+        metadata_layout.addRow(
             "Modified:",
             self.detail_modified
         )
 
-        # ====================================================
-        # Permission visualizer
-        # ====================================================
+        details_layout.addWidget(
+            metadata_widget
+        )
+
+        # ----------------------------------------------------
+        # Permission title
+        # ----------------------------------------------------
 
         permissions_title = QLabel(
-            "PERMISSION VISUALIZER"
+            "🔐 PERMISSION VISUALIZER"
         )
 
         permissions_title.setStyleSheet(
             """
             QLabel {
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: bold;
-                padding-top: 15px;
-                padding-bottom: 5px;
+                padding-top: 12px;
+                padding-bottom: 6px;
             }
             """
         )
 
-        details_layout.addRow(
+        details_layout.addWidget(
             permissions_title
         )
+
+        # ----------------------------------------------------
+        # Permission grid
+        # ----------------------------------------------------
 
         permission_grid_widget = QWidget()
 
@@ -309,10 +626,14 @@ class MainWindow(QMainWindow):
         )
 
         self.permission_grid.setContentsMargins(
-            0,
-            0,
-            0,
-            0
+            4,
+            4,
+            4,
+            4
+        )
+
+        self.permission_grid.setHorizontalSpacing(
+            12
         )
 
         headers = [
@@ -322,16 +643,20 @@ class MainWindow(QMainWindow):
             "OTHER",
         ]
 
-        for column, header in enumerate(headers):
+        for column, header in enumerate(
+            headers
+        ):
 
-            label = QLabel(header)
-
-            label.setStyleSheet(
-                "font-weight: bold;"
+            label = QLabel(
+                header
             )
 
             label.setAlignment(
                 Qt.AlignmentFlag.AlignCenter
+            )
+
+            label.setStyleSheet(
+                "font-weight: bold;"
             )
 
             self.permission_grid.addWidget(
@@ -368,11 +693,17 @@ class MainWindow(QMainWindow):
             )
 
             for column, category in enumerate(
-                ["owner", "group", "other"],
+                [
+                    "owner",
+                    "group",
+                    "other",
+                ],
                 start=1
             ):
 
-                value = QLabel("—")
+                value = QLabel(
+                    "—"
+                )
 
                 value.setAlignment(
                     Qt.AlignmentFlag.AlignCenter
@@ -389,12 +720,19 @@ class MainWindow(QMainWindow):
                 )
 
                 self.permission_cells[
-                    (permission_name, category)
+                    (
+                        permission_name,
+                        category
+                    )
                 ] = value
 
-        details_layout.addRow(
+        details_layout.addWidget(
             permission_grid_widget
         )
+
+        # ----------------------------------------------------
+        # Permission explanations
+        # ----------------------------------------------------
 
         self.permission_symbolic = QLabel(
             "Symbolic: -"
@@ -412,29 +750,107 @@ class MainWindow(QMainWindow):
             True
         )
 
-        details_layout.addRow(
+        details_layout.addWidget(
             self.permission_symbolic
         )
 
-        details_layout.addRow(
+        details_layout.addWidget(
             self.permission_numeric
         )
 
-        details_layout.addRow(
+        details_layout.addWidget(
             self.permission_math
         )
 
-        content_layout.addWidget(
-            details_widget,
+        details_layout.addStretch(
             1
         )
 
-        main_layout.addLayout(
-            content_layout
+        workspace_splitter.addWidget(
+            details_panel
         )
 
         # ====================================================
-        # Initial filesystem tree
+        # RIGHT PANEL
+        # ====================================================
+
+        activity_panel = QWidget()
+
+        activity_layout = QVBoxLayout(
+            activity_panel
+        )
+
+        activity_layout.setContentsMargins(
+            5,
+            0,
+            0,
+            0
+        )
+
+        activity_title = QLabel(
+            "🔴 LIVE LINUX ACTIVITY"
+        )
+
+        activity_title.setStyleSheet(
+            """
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                padding: 4px;
+            }
+            """
+        )
+
+        activity_layout.addWidget(
+            activity_title
+        )
+
+        watching_label = QLabel(
+            f"Watching: {LAB_PATH}"
+        )
+
+        watching_label.setWordWrap(
+            True
+        )
+
+        watching_label.setStyleSheet(
+            """
+            QLabel {
+                font-size: 12px;
+            }
+            """
+        )
+
+        activity_layout.addWidget(
+            watching_label
+        )
+
+        self.activity_widget = (
+            ActivityTimelineWidget()
+        )
+
+        activity_layout.addWidget(
+            self.activity_widget
+        )
+
+        workspace_splitter.addWidget(
+            activity_panel
+        )
+
+        # ====================================================
+        # Workspace proportions
+        # ====================================================
+
+        workspace_splitter.setSizes(
+            [
+                520,
+                430,
+                600,
+            ]
+        )
+
+        # ====================================================
+        # Filesystem
         # ====================================================
 
         self.build_initial_tree()
@@ -444,7 +860,8 @@ class MainWindow(QMainWindow):
         # ====================================================
 
         self.monitor = FileSystemMonitor(
-            LAB_PATH
+            LAB_PATH,
+            self.event_bus
         )
 
         self.monitor.signals.created.connect(
@@ -466,34 +883,389 @@ class MainWindow(QMainWindow):
         self.monitor.start()
 
         # ====================================================
-        # Current directory timer
-        # Temporary prototype
+        # Event subscriptions
         # ====================================================
 
-        self.location_timer = QTimer(
-            self
+        self.subscribe_to_events()
+
+        # ====================================================
+        # Start terminal worker
+        # ====================================================
+
+        self.session_thread.start()
+
+    # ========================================================
+    # Event Bus subscriptions
+    # ========================================================
+
+    def subscribe_to_events(
+        self
+    ):
+
+        filesystem_events = [
+            "file.created",
+            "file.modified",
+            "file.deleted",
+            "file.moved",
+            "directory.created",
+            "directory.deleted",
+            "file.permissions_changed",
+        ]
+
+        for event_type in filesystem_events:
+
+            self.event_bus.subscribe(
+                event_type,
+                self.handle_activity_event
+            )
+
+        self.event_bus.subscribe(
+            "shell.session_created",
+            self.handle_shell_session_event
         )
 
-        self.location_timer.timeout.connect(
-            self.update_current_location
+        self.event_bus.subscribe(
+            "shell.session_removed",
+            self.handle_shell_session_event
         )
 
-        self.location_timer.start(
-            500
+        self.event_bus.subscribe(
+            "shell.cwd_changed",
+            self.handle_shell_cwd_changed
         )
 
-        self.update_current_location()
+    # ========================================================
+    # Generic activity
+    # ========================================================
+
+    def handle_activity_event(
+        self,
+        event
+    ):
+
+        self.activity_timeline.record(
+            event
+        )
+
+        self.activity_widget.add_event(
+            event
+        )
+
+    # ========================================================
+    # Worker event
+    # ========================================================
+
+    def handle_session_event(
+        self,
+        event
+    ):
+
+        # Runs in the GUI thread because the signal from
+        # the worker is delivered through Qt.
+
+        self.event_bus.publish(
+            event
+        )
+
+    # ========================================================
+    # Worker state snapshot
+    # ========================================================
+
+    def handle_sessions_updated(
+        self,
+        sessions
+    ):
+
+        # Build one GUI-side snapshot.
+
+        self.session_snapshot = {
+            session.pid: session
+            for session in sessions
+        }
+
+        # Update session UI.
+
+        self.session_widget.update_sessions(
+            sessions
+        )
+
+        # Ensure that the focused PID still exists.
+
+        self.ensure_focused_session_exists()
+
+        # Update the focused location from the SAME
+        # session snapshot that the session panel displays.
+
+        self.update_focused_location_from_snapshot()
+
+    # ========================================================
+    # Worker error
+    # ========================================================
+
+    def handle_session_worker_error(
+        self,
+        message
+    ):
+
+        print(
+            "Terminal session worker error:",
+            message
+        )
+
+    # ========================================================
+    # Shell session created/removed
+    # ========================================================
+
+    def handle_shell_session_event(
+        self,
+        event
+    ):
+
+        self.activity_timeline.record(
+            event
+        )
+
+        self.activity_widget.add_event(
+            event
+        )
+
+    # ========================================================
+    # Shell CWD changed
+    # ========================================================
+
+    def handle_shell_cwd_changed(
+        self,
+        event
+    ):
+
+        self.activity_timeline.record(
+            event
+        )
+
+        self.activity_widget.add_event(
+            event
+        )
+
+        pid = event.data.get(
+            "pid"
+        )
+
+        focused_pid = (
+            self.focused_session.pid
+        )
+
+        if pid != focused_pid:
+            return
+
+        new_path = event.data.get(
+            "new_path"
+        )
+
+        if not new_path:
+            return
+
+        self.set_focused_location(
+            Path(new_path)
+        )
+
+    # ========================================================
+    # Focused session validity
+    # ========================================================
+
+    def ensure_focused_session_exists(
+        self
+    ):
+
+        # No sessions exist.
+
+        if not self.session_snapshot:
+
+            if self.focused_session.has_session():
+
+                self.focused_session.clear()
+
+                self.session_widget.current_pid = None
+
+                self.session_widget.update_focus_markers()
+
+            self.show_unknown_location()
+
+            return
+
+        focused_pid = (
+            self.focused_session.pid
+        )
+
+        # Current focused session still exists.
+
+        if (
+            focused_pid is not None
+            and focused_pid in self.session_snapshot
+        ):
+
+            return
+
+        # Choose the first available session.
+
+        first_session = next(
+            iter(
+                self.session_snapshot.values()
+            )
+        )
+
+        self.focused_session.set_pid(
+            first_session.pid
+        )
+
+        self.session_widget.current_pid = (
+            first_session.pid
+        )
+
+        self.session_widget.update_focus_markers()
+
+    # ========================================================
+    # Session selection
+    # ========================================================
+
+    def handle_session_selected(
+        self,
+        pid
+    ):
+
+        session = (
+            self.session_snapshot.get(
+                pid
+            )
+        )
+
+        if session is None:
+            return
+
+        self.focused_session.set_pid(
+            pid
+        )
+
+        self.set_focused_location(
+            session.cwd
+        )
+
+    # ========================================================
+    # Focused location from current snapshot
+    # ========================================================
+
+    def update_focused_location_from_snapshot(
+        self
+    ):
+
+        pid = (
+            self.focused_session.pid
+        )
+
+        if pid is None:
+            return
+
+        session = (
+            self.session_snapshot.get(
+                pid
+            )
+        )
+
+        if session is None:
+
+            self.show_unknown_location()
+
+            return
+
+        self.set_focused_location(
+            session.cwd
+        )
+
+    # ========================================================
+    # Set focused location
+    # ========================================================
+
+    def set_focused_location(
+        self,
+        path
+    ):
+
+        if path is None:
+
+            self.show_unknown_location()
+
+            return
+
+        try:
+
+            current_directory = Path(
+                path
+            ).resolve()
+
+        except OSError:
+
+            self.show_unknown_location()
+
+            return
+
+        self.location_label.setText(
+            "📍 CURRENT LOCATION: "
+            + str(current_directory)
+        )
+
+        self.update_breadcrumb(
+            current_directory
+        )
+
+        self.update_navigation_info(
+            current_directory
+        )
+
+        self.update_path_anatomy(
+            current_directory
+        )
+
+        self.highlight_current_directory(
+            current_directory
+        )
+
+    # ========================================================
+    # Unknown location
+    # ========================================================
+
+    def show_unknown_location(
+        self
+    ):
+
+        self.location_label.setText(
+            "📍 CURRENT LOCATION: unknown"
+        )
+
+        self.breadcrumb_label.setText(
+            "/"
+        )
+
+        self.navigation_label.setText(
+            "Parent: unknown"
+        )
+
+        self.path_anatomy_label.setText(
+            "Path anatomy: unknown"
+        )
 
     # ========================================================
     # Filesystem tree
     # ========================================================
 
-    def build_initial_tree(self):
+    def build_initial_tree(
+        self
+    ):
 
         self.tree.clear()
 
         root_item = QTreeWidgetItem(
-            ["📁 LinuxLab"]
+            [
+                "📁 LinuxLab"
+            ]
         )
 
         root_item.setData(
@@ -546,13 +1318,8 @@ class MainWindow(QMainWindow):
 
         for path in entries:
 
-            # Hide temporary communication file.
-
             if path.name == ".current_directory":
-
                 continue
-
-            # Determine icon.
 
             if path.is_symlink():
 
@@ -594,69 +1361,6 @@ class MainWindow(QMainWindow):
                 )
 
     # ========================================================
-    # Current location
-    # ========================================================
-
-    def update_current_location(
-        self
-    ):
-
-        current_directory = (
-            get_current_directory()
-        )
-
-        if current_directory is None:
-
-            self.location_label.setText(
-                "📍 CURRENT LOCATION: unknown"
-            )
-
-            self.breadcrumb_label.setText(
-                "/"
-            )
-
-            self.navigation_label.setText(
-                "Parent: unknown"
-            )
-
-            self.path_anatomy_label.setText(
-                "Path anatomy: unknown"
-            )
-
-            return
-
-        try:
-
-            current_directory = Path(
-                current_directory
-            ).resolve()
-
-        except OSError:
-
-            return
-
-        self.location_label.setText(
-            "📍 CURRENT LOCATION: "
-            + str(current_directory)
-        )
-
-        self.update_breadcrumb(
-            current_directory
-        )
-
-        self.update_navigation_info(
-            current_directory
-        )
-
-        self.update_path_anatomy(
-            current_directory
-        )
-
-        self.highlight_current_directory(
-            current_directory
-        )
-
-    # ========================================================
     # Breadcrumb
     # ========================================================
 
@@ -682,7 +1386,7 @@ class MainWindow(QMainWindow):
         )
 
     # ========================================================
-    # Navigation info
+    # Navigation
     # ========================================================
 
     def update_navigation_info(
@@ -690,7 +1394,9 @@ class MainWindow(QMainWindow):
         current_directory
     ):
 
-        parent = current_directory.parent
+        parent = (
+            current_directory.parent
+        )
 
         self.navigation_label.setText(
             "Parent: "
@@ -723,7 +1429,9 @@ class MainWindow(QMainWindow):
 
         pieces = []
 
-        for index, part in enumerate(parts):
+        for index, part in enumerate(
+            parts
+        ):
 
             if part == "/":
 
@@ -739,7 +1447,9 @@ class MainWindow(QMainWindow):
 
         self.path_anatomy_label.setText(
             "Path anatomy: "
-            + "  |  ".join(pieces)
+            + "  |  ".join(
+                pieces
+            )
         )
 
     # ========================================================
@@ -773,7 +1483,7 @@ class MainWindow(QMainWindow):
             )
 
     # ========================================================
-    # Find current directory
+    # Find and highlight
     # ========================================================
 
     def find_and_highlight(
@@ -867,7 +1577,9 @@ class MainWindow(QMainWindow):
 
         if path:
 
-            path_obj = Path(path)
+            path_obj = Path(
+                path
+            )
 
             if path_obj.is_symlink():
 
@@ -904,7 +1616,7 @@ class MainWindow(QMainWindow):
             )
 
     # ========================================================
-    # File / directory details
+    # Show selected filesystem object
     # ========================================================
 
     def show_file_details(
@@ -919,8 +1631,47 @@ class MainWindow(QMainWindow):
         )
 
         if not path:
+            return
+
+        self.selected_path = Path(
+            path
+        )
+
+        self.update_file_details(
+            self.selected_path
+        )
+
+    # ========================================================
+    # Refresh selected details
+    # ========================================================
+
+    def refresh_selected_details(
+        self
+    ):
+
+        if self.selected_path is None:
+            return
+
+        if not self.selected_path.exists():
+
+            self.clear_details()
+
+            self.selected_path = None
 
             return
+
+        self.update_file_details(
+            self.selected_path
+        )
+
+    # ========================================================
+    # File metadata
+    # ========================================================
+
+    def update_file_details(
+        self,
+        path
+    ):
 
         try:
 
@@ -942,16 +1693,14 @@ class MainWindow(QMainWindow):
 
             return
 
-        path_obj = Path(path)
-
-        # Name
+        path_obj = Path(
+            path
+        )
 
         self.detail_name.setText(
             path_obj.name
             or str(path_obj)
         )
-
-        # Type
 
         if path_obj.is_symlink():
 
@@ -973,41 +1722,29 @@ class MainWindow(QMainWindow):
             file_type
         )
 
-        # Path
-
         self.detail_path.setText(
             str(path_obj)
         )
-
-        # Parent
 
         self.detail_parent.setText(
             str(path_obj.parent)
         )
 
-        # Name only
-
         self.detail_name_only.setText(
             path_obj.name
         )
-
-        # Size
 
         self.detail_size.setText(
             f"{info.st_size:,} bytes"
         )
 
-        # Owner
-
         try:
 
             import pwd
 
-            owner = (
-                pwd.getpwuid(
-                    info.st_uid
-                ).pw_name
-            )
+            owner = pwd.getpwuid(
+                info.st_uid
+            ).pw_name
 
         except Exception:
 
@@ -1019,17 +1756,13 @@ class MainWindow(QMainWindow):
             owner
         )
 
-        # Group
-
         try:
 
             import grp
 
-            group = (
-                grp.getgrgid(
-                    info.st_gid
-                ).gr_name
-            )
+            group = grp.getgrgid(
+                info.st_gid
+            ).gr_name
 
         except Exception:
 
@@ -1040,8 +1773,6 @@ class MainWindow(QMainWindow):
         self.detail_group.setText(
             group
         )
-
-        # Symbolic permissions
 
         permissions = stat.filemode(
             info.st_mode
@@ -1056,8 +1787,6 @@ class MainWindow(QMainWindow):
             + permissions
         )
 
-        # Numeric permissions
-
         permission_mode = (
             info.st_mode & 0o777
         )
@@ -1066,19 +1795,13 @@ class MainWindow(QMainWindow):
             oct(permission_mode)
         )
 
-        # Permission visualizer
-
         self.update_permission_visualizer(
             permission_mode
         )
 
-        # Permission mathematics
-
         self.update_permission_math(
             permission_mode
         )
-
-        # Modified time
 
         modified = datetime.fromtimestamp(
             info.st_mtime
@@ -1091,7 +1814,7 @@ class MainWindow(QMainWindow):
         )
 
     # ========================================================
-    # Clear details
+    # Clear metadata
     # ========================================================
 
     def clear_details(
@@ -1178,11 +1901,15 @@ class MainWindow(QMainWindow):
 
                 if value & bit:
 
-                    cell.setText("✓")
+                    cell.setText(
+                        "✓"
+                    )
 
                 else:
 
-                    cell.setText("✗")
+                    cell.setText(
+                        "✗"
+                    )
 
         self.permission_numeric.setText(
             "Numeric: "
@@ -1208,26 +1935,32 @@ class MainWindow(QMainWindow):
 
         other = mode & 7
 
-        def explain(value):
+        def explain(
+            value
+        ):
 
             parts = []
 
             if value & 4:
+
                 parts.append(
                     "4 (READ)"
                 )
 
             if value & 2:
+
                 parts.append(
                     "2 (WRITE)"
                 )
 
             if value & 1:
+
                 parts.append(
                     "1 (EXECUTE)"
                 )
 
             if not parts:
+
                 parts.append(
                     "0"
                 )
@@ -1248,7 +1981,7 @@ class MainWindow(QMainWindow):
         )
 
     # ========================================================
-    # Filesystem events
+    # Filesystem created
     # ========================================================
 
     def handle_created(
@@ -1259,13 +1992,44 @@ class MainWindow(QMainWindow):
 
         self.refresh_tree()
 
+        self.refresh_selected_details()
+
+    # ========================================================
+    # Filesystem deleted
+    # ========================================================
+
     def handle_deleted(
         self,
         path,
         is_directory
     ):
 
+        deleted_path = Path(
+            path
+        )
+
+        if self.selected_path:
+
+            try:
+
+                if (
+                    self.selected_path.resolve()
+                    == deleted_path.resolve()
+                ):
+
+                    self.selected_path = None
+
+            except OSError:
+
+                pass
+
         self.refresh_tree()
+
+        self.refresh_selected_details()
+
+    # ========================================================
+    # Filesystem modified
+    # ========================================================
 
     def handle_modified(
         self,
@@ -1274,16 +2038,68 @@ class MainWindow(QMainWindow):
 
         self.refresh_tree()
 
+        if self.selected_path is None:
+            return
+
+        try:
+
+            changed_path = Path(
+                path
+            ).resolve()
+
+            selected_path = (
+                self.selected_path.resolve()
+            )
+
+            if changed_path == selected_path:
+
+                self.refresh_selected_details()
+
+        except OSError:
+
+            pass
+
+    # ========================================================
+    # Filesystem moved
+    # ========================================================
+
     def handle_moved(
         self,
         old_path,
         new_path
     ):
 
+        old_path_obj = Path(
+            old_path
+        )
+
+        new_path_obj = Path(
+            new_path
+        )
+
+        if self.selected_path:
+
+            try:
+
+                if (
+                    self.selected_path.resolve()
+                    == old_path_obj.resolve()
+                ):
+
+                    self.selected_path = (
+                        new_path_obj
+                    )
+
+            except OSError:
+
+                pass
+
         self.refresh_tree()
 
+        self.refresh_selected_details()
+
     # ========================================================
-    # Refresh
+    # Refresh tree
     # ========================================================
 
     def refresh_tree(
@@ -1292,7 +2108,7 @@ class MainWindow(QMainWindow):
 
         self.build_initial_tree()
 
-        self.update_current_location()
+        self.update_focused_location_from_snapshot()
 
     # ========================================================
     # Shutdown
@@ -1303,9 +2119,72 @@ class MainWindow(QMainWindow):
         event
     ):
 
-        self.monitor.stop()
+        # ----------------------------------------------------
+        # Stop GUI-side state
+        # ----------------------------------------------------
 
-        self.location_timer.stop()
+        if hasattr(
+            self,
+            "monitor"
+        ):
+
+            self.monitor.stop()
+
+        # ----------------------------------------------------
+        # Stop the worker's QTimer IN THE WORKER THREAD.
+        #
+        # BlockingQueuedConnection waits until stop()
+        # has actually executed in the worker thread.
+        # ----------------------------------------------------
+
+        if hasattr(
+            self,
+            "session_worker"
+        ):
+
+            if hasattr(
+                self,
+                "session_thread"
+            ):
+
+                if self.session_thread.isRunning():
+
+                    try:
+
+                        QMetaObject.invokeMethod(
+                            self.session_worker,
+                            "stop",
+                            Qt.ConnectionType.BlockingQueuedConnection
+                        )
+
+                    except Exception as error:
+
+                        print(
+                            "Worker stop error:",
+                            error
+                        )
+
+        # ----------------------------------------------------
+        # Stop worker thread
+        # ----------------------------------------------------
+
+        if hasattr(
+            self,
+            "session_thread"
+        ):
+
+            if self.session_thread.isRunning():
+
+                self.session_thread.quit()
+
+                if not self.session_thread.wait(
+                    2000
+                ):
+
+                    print(
+                        "Warning: "
+                        "session thread did not stop cleanly."
+                    )
 
         event.accept()
 
