@@ -1318,8 +1318,6 @@ class MainWindow(QMainWindow):
 
         for path in entries:
 
-            if path.name == ".current_directory":
-                continue
 
             if path.is_symlink():
 
