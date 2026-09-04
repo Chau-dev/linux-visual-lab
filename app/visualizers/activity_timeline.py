@@ -65,17 +65,21 @@ class EventCardWidget(QFrame):
         # PID badge (if applicable)
         pid = data.get("pid")
         if pid is not None:
-            pid_lbl = QLabel(f"PID: {pid}")
+            from app.ui.identity import get_identity_style
+            bg, fg, border = get_identity_style(pid)
+            pid_lbl = QLabel(f"PID {pid}")
             pid_lbl.setStyleSheet(
-                """
-                QLabel {
-                    background-color: rgba(255, 255, 255, 0.08);
-                    color: #bbb;
+                f"""
+                QLabel {{
+                    background-color: {bg};
+                    color: {fg};
+                    border: 1px solid {border};
                     font-size: 10px;
+                    font-weight: bold;
                     padding: 2px 6px;
                     border-radius: 3px;
                     font-family: monospace;
-                }
+                }}
                 """
             )
             header_layout.addWidget(pid_lbl)
@@ -200,6 +204,30 @@ class EventCardWidget(QFrame):
                 "text_color": "#e67e22",
                 "border_color": "#d35400",
             },
+            "process.created": {
+                "title": "⚡ PROCESS CREATED",
+                "bg_color": "rgba(46, 204, 113, 0.2)",
+                "text_color": "#2ecc71",
+                "border_color": "#27ae60",
+            },
+            "process.removed": {
+                "title": "🚪 PROCESS REMOVED",
+                "bg_color": "rgba(231, 76, 60, 0.2)",
+                "text_color": "#e74c3c",
+                "border_color": "#c0392b",
+            },
+            "process.state_changed": {
+                "title": "🔄 STATE CHANGED",
+                "bg_color": "rgba(241, 196, 15, 0.2)",
+                "text_color": "#f1c40f",
+                "border_color": "#f39c12",
+            },
+            "process.cwd_changed": {
+                "title": "🧭 PROCESS CWD",
+                "bg_color": "rgba(155, 89, 182, 0.2)",
+                "text_color": "#9b59b6",
+                "border_color": "#8e44ad",
+            },
         }
 
         return badges.get(
@@ -246,26 +274,63 @@ class EventCardWidget(QFrame):
             cmd = data.get("command", "shell")
             return f"Closed shell session '{cmd}'"
 
+        if event_type == "process.created":
+            pid = data.get("pid", "?")
+            cmd = data.get("command", "process")
+            return f"PID {pid} observed in /proc ({cmd})"
+
+        if event_type == "process.removed":
+            pid = data.get("pid", "?")
+            cmd = data.get("command", "process")
+            return f"PID {pid} no longer present in /proc ({cmd})"
+
+        if event_type == "process.state_changed":
+            pid = data.get("pid", "?")
+            cmd = data.get("command", "process")
+            old_s = data.get("old_state", "?")
+            new_s = data.get("new_state", "?")
+            return f"PID {pid} ({cmd}): state {old_s} ➔ {new_s}"
+
+        if event_type == "process.cwd_changed":
+            pid = data.get("pid", "?")
+            cmd = data.get("command", "process")
+            old_c = data.get("old_cwd", "?")
+            new_c = data.get("new_cwd", "?")
+            return f"PID {pid} ({cmd}): {old_c} ➔ {new_c}"
+
         return str(data)
 
     def _get_educational_insight(self, event_type: str, data: dict) -> str:
-        insights = {
-            "file.created": "Kernel Insight: A new Inode and directory entry were allocated on the filesystem.",
-            "directory.created": "Kernel Insight: Created a directory block containing '.' (self) and '..' (parent) links.",
-            "file.modified": "Kernel Insight: Process wrote data bytes; mtime & ctime timestamps were updated.",
-            "file.deleted": "Kernel Insight: Directory entry unlinked; inode reference count decremented. Disk blocks freed when count reaches 0.",
-            "directory.deleted": "Kernel Insight: Directory entry unlinked and table removed from parent directory.",
-            "file.moved": "Kernel Insight: Directory pointer updated. Fast operation: Inode number is retained; no disk blocks were copied.",
-            "shell.cwd_changed": "Kernel Insight: Process updated its active working directory pointer in /proc/<pid>/cwd.",
-            "shell.session_created": "Kernel Insight: New process spawned with standard streams (stdin, stdout, stderr) attached to pseudo-terminal.",
-            "shell.session_removed": "Kernel Insight: Process terminated. File descriptors and memory table were reclaimed by the kernel.",
-            "file.permissions_changed": "Kernel Insight: The 12-bit mode field inside the file's Inode table was modified.",
-        }
+        if event_type == "file.created":
+            return f"VFS Observation: Inode/dentry entry instantiated at {data.get('path', '')}."
+        if event_type == "directory.created":
+            return f"VFS Observation: Directory entry created at {data.get('path', '')}."
+        if event_type == "file.modified":
+            return f"VFS Observation: Content write or attribute modification reported for {data.get('path', '')}."
+        if event_type == "file.deleted":
+            return f"VFS Observation: Directory entry unlinked at {data.get('path', '')}."
+        if event_type == "directory.deleted":
+            return f"VFS Observation: Directory entry unlinked at {data.get('path', '')}."
+        if event_type == "file.moved":
+            return f"VFS Observation: Dentry rename from {data.get('old_path', '')} to {data.get('new_path', '')}."
+        if event_type == "file.permissions_changed":
+            return f"POSIX stat Observation: st_mode changed from {data.get('old_mode', '')} to {data.get('new_mode', '')}."
+        if event_type == "shell.session_created":
+            return f"/proc Observation: Shell PID {data.get('pid', '')} ({data.get('command', '')}) active on {data.get('tty', 'unknown')} with CWD {data.get('cwd', '')}."
+        if event_type == "shell.session_removed":
+            return f"/proc Observation: Shell PID {data.get('pid', '')} ({data.get('command', '')}) terminated."
+        if event_type == "shell.cwd_changed":
+            return f"/proc Observation: /proc/{data.get('pid', '')}/cwd symlink target updated to {data.get('new_path', '')}."
+        if event_type == "process.created":
+            return f"/proc Observation: PID {data.get('pid', '')} (/proc/{data.get('pid', '')}) newly observed in snapshot (command: {data.get('command', '')}, state: {data.get('state', '')})."
+        if event_type == "process.removed":
+            return f"/proc Observation: PID {data.get('pid', '')} (/proc/{data.get('pid', '')}) no longer present in snapshot (command: {data.get('command', '')})."
+        if event_type == "process.state_changed":
+            return f"/proc Observation: /proc/{data.get('pid', '')}/stat state field transitioned from {data.get('old_state', '')} to {data.get('new_state', '')}."
+        if event_type == "process.cwd_changed":
+            return f"/proc Observation: /proc/{data.get('pid', '')}/cwd symlink target updated to {data.get('new_cwd', '')}."
 
-        return insights.get(
-            event_type,
-            "Kernel Insight: System event processed and recorded in the Linux activity timeline.",
-        )
+        return f"System Observation: {event_type} reported."
 
 
 class ActivityTimelineWidget(QWidget):
@@ -279,8 +344,9 @@ class ActivityTimelineWidget(QWidget):
     - Event counter and Clear functionality
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, max_events: int = 100):
         super().__init__(parent)
+        self.max_events = max_events
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -297,15 +363,18 @@ class ActivityTimelineWidget(QWidget):
         self.filter_combo.addItems([
             "🔍 All Events",
             "📁 Filesystem Only",
-            "🐚 Shell & Process Only",
+            "🐚 Shell & Terminal Only",
+            "⚡ Process Subsystem Only",
         ])
         self.filter_combo.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.filter_combo)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Filter path / PID...")
+        self.search_edit.setPlaceholderText("Filter path, PID, or multiple (e.g. sleep, cat, bash)...")
+        self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_filter)
         toolbar.addWidget(self.search_edit, 1)
+
 
         self.clear_btn = QPushButton("🗑️")
         self.clear_btn.setToolTip("Clear activity timeline")
@@ -350,6 +419,14 @@ class ActivityTimelineWidget(QWidget):
         """Return the number of events in the timeline."""
         return len(self._all_events)
 
+    def event_count(self) -> int:
+        """Return the total number of events recorded."""
+        return len(self._all_events)
+
+    def visible_count(self) -> int:
+        """Return the number of currently visible events matching filters."""
+        return sum(1 for item, _ in self._all_events if not item.isHidden())
+
     def add_event(self, event: SystemEvent):
         """
         Add a rich educational card for a newly detected Linux event.
@@ -392,13 +469,27 @@ class ActivityTimelineWidget(QWidget):
                 cat_match = event_type.startswith("file.") or event_type.startswith("directory.")
             elif filter_idx == 2:  # Shell Only
                 cat_match = event_type.startswith("shell.")
+            elif filter_idx == 3:  # Process Only
+                cat_match = event_type.startswith("process.")
 
             # Search query check
             query_match = True
             if query:
-                query_match = query in data_str or query in type_str or query in card.target_lbl.text().lower()
+                if "," in query or "|" in query:
+                    import re
+                    terms = [t.strip() for t in re.split(r"[,|]", query) if t.strip()]
+                else:
+                    tokens = [t.strip() for t in query.split() if t.strip()]
+                    terms = list(dict.fromkeys([query] + tokens))
+
+                target_text = card.target_lbl.text().lower()
+                query_match = any(
+                    term in data_str or term in type_str or term in target_text
+                    for term in terms
+                )
 
             is_visible = cat_match and query_match
+
             item.setHidden(not is_visible)
             if is_visible:
                 visible_count += 1

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import os
 import stat
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 
 @dataclass
-class AccessSimulationResult:
+class AccessEvaluationResult:
     """
-    Result of a Linux kernel 3-step access control check.
+    Result of a Linux kernel DAC (Discretionary Access Control) evaluation.
+    Explains the 3-step kernel decision algorithm based on real POSIX metadata.
     """
     matched_class: str  # "owner", "group", "other"
     step_number: int  # 1 (Owner check), 2 (Group check), 3 (Other check)
@@ -27,7 +28,6 @@ class AccessSimulationResult:
 class FilesystemObject:
     """
     Domain model representing a Linux filesystem entry and its POSIX metadata.
-
     Decouples raw Linux OS stat inspection from UI visualizers.
     """
     path: Path
@@ -220,14 +220,15 @@ class FilesystemObject:
             ctime=datetime.fromtimestamp(info.st_ctime),
         )
 
-    def simulate_kernel_access(
+    def evaluate_access(
         self,
         subject_uid: int,
         subject_gid: int,
         subject_supplementary_gids: list[int] | set[int] | None = None,
-    ) -> AccessSimulationResult:
+    ) -> AccessEvaluationResult:
         """
-        Simulates the exact 3-step Linux Kernel DAC (Discretionary Access Control) algorithm:
+        Explains how the Linux Kernel 3-step DAC algorithm evaluates permissions
+        for a given Subject (UID, GID, supplementary GIDs) against this object's real POSIX mode.
 
         Step 1: Check if Subject UID matches File UID (Owner Class).
                 If matched, the kernel evaluates ONLY the owner rwx bits and STOPS.
@@ -241,8 +242,6 @@ class FilesystemObject:
             subject_supplementary_gids = set(subject_supplementary_gids)
 
         all_subject_gids = {subject_gid} | subject_supplementary_gids
-
-        # Root bypass check (UID 0 gets special kernel privileges, but we explain normal DAC first)
         is_root = (subject_uid == 0)
 
         # ----------------------------------------------------
@@ -253,7 +252,7 @@ class FilesystemObject:
             can_write = self.owner_w or is_root
             can_execute = self.owner_x or (is_root and (self.owner_x or self.group_x or self.other_x))
 
-            return AccessSimulationResult(
+            return AccessEvaluationResult(
                 matched_class="owner",
                 step_number=1,
                 decision_reason=(
@@ -278,7 +277,7 @@ class FilesystemObject:
 
             matching_type = "Primary GID" if self.gid == subject_gid else "Supplementary Group"
 
-            return AccessSimulationResult(
+            return AccessEvaluationResult(
                 matched_class="group",
                 step_number=2,
                 decision_reason=(
@@ -300,7 +299,7 @@ class FilesystemObject:
         can_write = self.other_w or is_root
         can_execute = self.other_x or (is_root and (self.owner_x or self.group_x or self.other_x))
 
-        return AccessSimulationResult(
+        return AccessEvaluationResult(
             matched_class="other",
             step_number=3,
             decision_reason=(

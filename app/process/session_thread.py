@@ -1,18 +1,23 @@
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot, QMetaObject, Qt
 
-from app.process.session_worker import (
-    TerminalSessionWorker,
-)
+from app.process.session_worker import TerminalSessionWorker
 
 
 class TerminalSessionThread(QObject):
     """
-    Owns a dedicated QThread for TerminalSessionWorker.
+    Clean controller for TerminalSessionWorker running inside a dedicated QThread.
 
-    The worker performs /proc polling in its own thread.
+    Exposes controller methods:
+        - start()
+        - stop()
+
+    And Qt signals:
+        - event_detected(SystemEvent)
+        - sessions_updated(dict[int, TerminalSession])
+        - error(str)
     """
 
-    event_ready = Signal(object)
+    event_detected = Signal(object)
     sessions_updated = Signal(object)
     error = Signal(str)
 
@@ -26,79 +31,35 @@ class TerminalSessionThread(QObject):
         super().__init__(parent)
 
         self.thread = QThread()
+        self.worker = TerminalSessionWorker(interval_ms=interval_ms)
+        self.worker.moveToThread(self.thread)
 
-        self.worker = TerminalSessionWorker(
-            interval_ms=interval_ms
-        )
+        # Thread startup triggers worker start
+        self.thread.started.connect(self.worker.start)
+        self.stop_requested.connect(self.worker.stop)
 
-        self.worker.moveToThread(
-            self.thread
-        )
+        # Forward worker signals to controller signals
+        self.worker.event_detected.connect(self.event_detected)
+        self.worker.sessions_updated.connect(self.sessions_updated)
+        self.worker.error.connect(self.error)
 
-        # ====================================================
-        # Thread startup
-        # ====================================================
-
-        self.thread.started.connect(
-            self.worker.start
-        )
-
-        # ====================================================
-        # Worker events
-        # ====================================================
-
-        self.worker.event_detected.connect(
-            self.event_ready
-        )
-
-        self.worker.sessions_updated.connect(
-            self.sessions_updated
-        )
-
-        self.worker.error.connect(
-            self.error
-        )
-
-        # ====================================================
-        # Safe worker shutdown
-        # ====================================================
-
-        self.stop_requested.connect(
-            self.worker.stop
-        )
-
-        self.worker.finished.connect(
-            self.thread.quit
-        )
-
-        self.thread.finished.connect(
-            self.worker.deleteLater
-        )
-
-    # ========================================================
-    # Start
-    # ========================================================
+        # Clean lifecycle
+        self.worker.finished.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
 
     def start(self):
-
+        """
+        Start the background polling thread.
+        """
         if not self.thread.isRunning():
-
             self.thread.start()
-
-    # ========================================================
-    # Stop
-    # ========================================================
 
     def stop(self):
         """
-        Request shutdown from the worker thread.
+        Safely stop the worker in its own thread and wait for completion.
         """
-
         if not self.thread.isRunning():
-
             return
-
-        from PySide6.QtCore import QMetaObject, Qt
 
         try:
             QMetaObject.invokeMethod(
@@ -110,19 +71,16 @@ class TerminalSessionThread(QObject):
             pass
 
         self.thread.quit()
+        self.thread.wait(2000)
 
-        self.thread.wait()
-
-    # ========================================================
-    # Destructor safety
-    # ========================================================
+    def is_running(self) -> bool:
+        """
+        Return whether the background thread is running.
+        """
+        return self.thread.isRunning()
 
     def __del__(self):
-
         try:
-
             self.stop()
-
         except Exception:
-
             pass

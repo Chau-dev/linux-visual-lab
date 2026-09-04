@@ -34,6 +34,37 @@ class TestEventBus(unittest.TestCase):
         bus.publish(SystemEvent(event_type="custom.event"))
         self.assertEqual(calls, ["handler1", "handler2"])
 
+    def test_unsubscribe(self):
+        bus = EventBus()
+        calls = []
+
+        def handler(e):
+            calls.append(1)
+
+        bus.subscribe("test.unsub", handler)
+        bus.publish(SystemEvent(event_type="test.unsub"))
+        self.assertEqual(len(calls), 1)
+
+        bus.unsubscribe("test.unsub", handler)
+        bus.publish(SystemEvent(event_type="test.unsub"))
+        self.assertEqual(len(calls), 1)
+
+    def test_error_resilience(self):
+        bus = EventBus()
+        calls = []
+
+        def bad_handler(e):
+            raise RuntimeError("Subscriber error")
+
+        def good_handler(e):
+            calls.append("ok")
+
+        bus.subscribe("test.error", bad_handler)
+        bus.subscribe("test.error", good_handler)
+
+        bus.publish(SystemEvent(event_type="test.error"))
+        self.assertEqual(calls, ["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

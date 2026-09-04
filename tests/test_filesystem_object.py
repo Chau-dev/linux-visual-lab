@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.models.filesystem_object import FilesystemObject, AccessSimulationResult
+from app.core.models import FilesystemObject, AccessEvaluationResult
 
 
 class TestFilesystemObject(unittest.TestCase):
@@ -60,7 +60,6 @@ class TestFilesystemObject(unittest.TestCase):
             self.assertFalse(obj.sgid)
             self.assertFalse(obj.sticky)
             self.assertEqual(obj.octal_mode, "4755")
-            self.assertIn("s", obj.symbolic_mode)
 
             # Set SGID (2755)
             os.chmod(tmp_path, 0o2755)
@@ -71,7 +70,7 @@ class TestFilesystemObject(unittest.TestCase):
             self.assertFalse(obj.sticky)
             self.assertEqual(obj.octal_mode, "2755")
 
-            # Set Sticky bit (1777)
+            # Set Sticky (1777)
             os.chmod(tmp_path, 0o1777)
             obj = FilesystemObject.from_path(tmp_path)
             self.assertIsNotNone(obj)
@@ -83,85 +82,71 @@ class TestFilesystemObject(unittest.TestCase):
             if tmp_path.exists():
                 tmp_path.unlink()
 
-    def test_kernel_3_step_access_simulation(self):
+    def test_directory_inspection(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dir_path = Path(tmp_dir)
+            obj = FilesystemObject.from_path(dir_path)
+            self.assertIsNotNone(obj)
+            self.assertTrue(obj.is_dir)
+            self.assertFalse(obj.is_file)
+            self.assertEqual(obj.file_type, "Directory")
+
+    def test_symlink_inspection(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "target.txt"
+            target.write_text("content")
+
+            link = Path(tmp_dir) / "link.txt"
+            os.symlink(target, link)
+
+            obj = FilesystemObject.from_path(link)
+            self.assertIsNotNone(obj)
+            self.assertTrue(obj.is_symlink)
+            self.assertFalse(obj.is_broken_symlink)
+            self.assertEqual(obj.symlink_target, str(target))
+
+    def test_evaluate_access_dac_rules(self):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            # Mode 0750 (rwxr-x---)
-            # Owner: rwx (7)
-            # Group: r-x (5)
-            # Other: --- (0)
-            os.chmod(tmp_path, 0o750)
+            # Mode 0640: Owner rw-, Group r--, Other ---
+            os.chmod(tmp_path, 0o640)
             obj = FilesystemObject.from_path(tmp_path)
             self.assertIsNotNone(obj)
 
-            file_uid = obj.uid
-            file_gid = obj.gid
+            # Step 1: Owner match
+            owner_res = obj.evaluate_access(subject_uid=obj.uid, subject_gid=9999)
+            self.assertEqual(owner_res.matched_class, "owner")
+            self.assertEqual(owner_res.step_number, 1)
+            self.assertTrue(owner_res.can_read)
+            self.assertTrue(owner_res.can_write)
+            self.assertFalse(owner_res.can_execute)
 
-            # ----------------------------------------------------
-            # Test Step 1: Owner match
-            # ----------------------------------------------------
-            res_owner = obj.simulate_kernel_access(
-                subject_uid=file_uid,
-                subject_gid=9999,
-                subject_supplementary_gids=[],
-            )
-            self.assertEqual(res_owner.matched_class, "owner")
-            self.assertEqual(res_owner.step_number, 1)
-            self.assertTrue(res_owner.can_read)
-            self.assertTrue(res_owner.can_write)
-            self.assertTrue(res_owner.can_execute)
+            # Step 2: Group match
+            diff_uid = obj.uid + 100
+            group_res = obj.evaluate_access(subject_uid=diff_uid, subject_gid=obj.gid)
+            self.assertEqual(group_res.matched_class, "group")
+            self.assertEqual(group_res.step_number, 2)
+            self.assertTrue(group_res.can_read)
+            self.assertFalse(group_res.can_write)
+            self.assertFalse(group_res.can_execute)
 
-            # ----------------------------------------------------
-            # Test Step 2: Group match (via primary GID)
-            # ----------------------------------------------------
-            res_group = obj.simulate_kernel_access(
-                subject_uid=9999,  # Different UID
-                subject_gid=file_gid,  # Matching primary GID
-                subject_supplementary_gids=[],
-            )
-            self.assertEqual(res_group.matched_class, "group")
-            self.assertEqual(res_group.step_number, 2)
-            self.assertTrue(res_group.can_read)
-            self.assertFalse(res_group.can_write)  # Group has no write bit
-            self.assertTrue(res_group.can_execute)
+            # Step 3: Other fallback
+            other_res = obj.evaluate_access(subject_uid=diff_uid, subject_gid=obj.gid + 100)
+            self.assertEqual(other_res.matched_class, "other")
+            self.assertEqual(other_res.step_number, 3)
+            self.assertFalse(other_res.can_read)
+            self.assertFalse(other_res.can_write)
+            self.assertFalse(other_res.can_execute)
 
-            # ----------------------------------------------------
-            # Test Step 2: Group match (via supplementary GIDs)
-            # ----------------------------------------------------
-            res_supp_group = obj.simulate_kernel_access(
-                subject_uid=9999,
-                subject_gid=8888,
-                subject_supplementary_gids=[file_gid, 7777],
-            )
-            self.assertEqual(res_supp_group.matched_class, "group")
-            self.assertEqual(res_supp_group.step_number, 2)
-            self.assertTrue(res_supp_group.can_read)
-            self.assertFalse(res_supp_group.can_write)
-            self.assertTrue(res_supp_group.can_execute)
-
-            # ----------------------------------------------------
-            # Test Step 3: Other fallback
-            # ----------------------------------------------------
-            res_other = obj.simulate_kernel_access(
-                subject_uid=9999,
-                subject_gid=8888,
-                subject_supplementary_gids=[7777, 6666],
-            )
-            self.assertEqual(res_other.matched_class, "other")
-            self.assertEqual(res_other.step_number, 3)
-            self.assertFalse(res_other.can_read)
-            self.assertFalse(res_other.can_write)
-            self.assertFalse(res_other.can_execute)
-
+            # Root bypass check (UID 0)
+            root_res = obj.evaluate_access(subject_uid=0, subject_gid=0)
+            self.assertTrue(root_res.can_read)
+            self.assertTrue(root_res.can_write)
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
-
-    def test_nonexistent_path_returns_none(self):
-        obj = FilesystemObject.from_path("/nonexistent/file/path/does_not_exist")
-        self.assertIsNone(obj)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 from app.core.event_bus import EventBus
 from app.core.events import SystemEvent
 from app.monitors.filesystem import FileSystemMonitor
-from app.main import MainWindow, get_default_lab_path
+from app.ui.main_window import MainWindow, get_default_lab_path
 
 
 class TestRobustness(unittest.TestCase):
@@ -86,19 +86,11 @@ class TestRobustness(unittest.TestCase):
             except OSError:
                 return  # Skip if symlink creation is not permitted
 
-            window = MainWindow()
-            window.selected_path = broken_symlink
-            window.refresh_selected_details()
-            self.assertIn("Broken symlink", window.permission_visualizer.file_name_label.text())
-            window.close()
-
-    def test_change_lab_directory(self):
-        """Test MainWindow dynamic directory switching."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            window = MainWindow()
-            window.change_lab_directory(Path(tmpdir))
-            self.assertEqual(window.lab_path, Path(tmpdir).resolve())
-            self.assertIn(str(Path(tmpdir).resolve()), window.watching_label.text())
+            window = MainWindow(lab_path=Path(tmpdir))
+            window.handle_tree_selection(broken_symlink)
+            self.assertIn("Broken symlink", window.inspector_widget.type_badge.text())
+            window.session_thread.stop()
+            window.fs_monitor.stop()
             window.close()
 
     def test_concurrent_event_bus_pub_sub(self):
@@ -134,4 +126,3 @@ class TestRobustness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

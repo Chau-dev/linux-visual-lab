@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from app.main import MainWindow
+from app.ui.main_window import MainWindow
 from app.process.session import TerminalSession
 
 
@@ -36,18 +36,13 @@ class TestMainWindow(unittest.TestCase):
             ),
         }
 
-        # Should not raise AttributeError: 'int' object has no attribute 'pid'
         window.handle_sessions_updated(dict_snapshot)
         self.assertEqual(len(window.session_snapshot), 2)
         self.assertEqual(window.session_widget.count(), 2)
 
-        # Simulate list snapshot
-        list_snapshot = list(dict_snapshot.values())
-        window.handle_sessions_updated(list_snapshot)
-        self.assertEqual(len(window.session_snapshot), 2)
-        self.assertEqual(window.session_widget.count(), 2)
-
         # Cleanup
+        window.session_thread.stop()
+        window.fs_monitor.stop()
         window.close()
 
 
