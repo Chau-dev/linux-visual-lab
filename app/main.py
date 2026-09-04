@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QSplitter,
     QFrame,
-    QFileDialog,
     QTabWidget,
 )
 
@@ -239,10 +238,8 @@ class MainWindow(QMainWindow):
         )
 
         # ----------------------------------------------------
-        # Location header and Change Folder action
+        # Location header
         # ----------------------------------------------------
-
-        header_layout = QHBoxLayout()
 
         self.location_label = QLabel(
             "📍 CURRENT LOCATION: unknown"
@@ -257,35 +254,8 @@ class MainWindow(QMainWindow):
             """
         )
 
-        header_layout.addWidget(
-            self.location_label,
-            1
-        )
-
-        self.change_folder_btn = QPushButton(
-            "📁 Choose Lab Folder..."
-        )
-
-        self.change_folder_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 4px 10px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            """
-        )
-
-        self.change_folder_btn.clicked.connect(
-            self.choose_lab_directory
-        )
-
-        header_layout.addWidget(
-            self.change_folder_btn
-        )
-
-        context_layout.addLayout(
-            header_layout
+        context_layout.addWidget(
+            self.location_label
         )
 
         # ----------------------------------------------------
@@ -787,24 +757,6 @@ class MainWindow(QMainWindow):
     # ========================================================
     # Dynamic Lab Directory Selection
     # ========================================================
-
-    def choose_lab_directory(
-        self
-    ):
-        """
-        Open a directory picker dialog allowing the user to select
-        any folder to watch in the Visual Lab.
-        """
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            "Select Linux Lab Directory",
-            str(self.lab_path),
-        )
-
-        if selected:
-            self.change_lab_directory(
-                Path(selected)
-            )
 
     def change_lab_directory(
         self,
