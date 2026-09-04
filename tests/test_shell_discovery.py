@@ -1,16 +1,18 @@
+import unittest
+
 from app.process.discovery import find_shell_processes
 
 
-shells = find_shell_processes()
+class TestShellDiscovery(unittest.TestCase):
+
+    def test_find_shell_processes(self):
+        # find_shell_processes should return a list without crashing
+        shells = find_shell_processes()
+        self.assertIsInstance(shells, list)
 
 
-print("Shell processes:")
-
-for session in shells:
-
-    print(
-        f"PID={session.pid} "
-        f"COMMAND={session.command} "
-        f"TTY={session.tty} "
-        f"CWD={session.cwd}"
-    )
+if __name__ == "__main__":
+    shells = find_shell_processes()
+    print("Shell processes:")
+    for session in shells:
+        print(f"PID={session.pid} COMMAND={session.command} TTY={session.tty} CWD={session.cwd}")

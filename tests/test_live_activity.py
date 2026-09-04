@@ -1,10 +1,9 @@
 import sys
-import time
+import unittest
+from pathlib import Path
 
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
-    QHBoxLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
@@ -17,51 +16,29 @@ from app.visualizers.activity_timeline import (
     ActivityTimelineWidget,
 )
 
-
-LAB_PATH = "/home/dev/LinuxLab"
+LAB_PATH = Path("/home/dev/LinuxLab")
 
 
 class LiveActivityWindow(QWidget):
 
     def __init__(self):
-
         super().__init__()
 
-        self.setWindowTitle(
-            "Linux Visual Lab - Live Activity"
-        )
+        try:
+            LAB_PATH.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
-        self.resize(
-            700,
-            600
-        )
 
-        # --------------------------------------------
-        # Event Bus
-        # --------------------------------------------
+        self.setWindowTitle("Linux Visual Lab - Live Activity")
+        self.resize(700, 600)
 
         self.event_bus = EventBus()
+        self.timeline = ActivityTimeline(max_events=100)
 
-        # --------------------------------------------
-        # Activity history
-        # --------------------------------------------
+        layout = QVBoxLayout(self)
 
-        self.timeline = ActivityTimeline(
-            max_events=100
-        )
-
-        # --------------------------------------------
-        # GUI
-        # --------------------------------------------
-
-        layout = QVBoxLayout(
-            self
-        )
-
-        title = QLabel(
-            "🔴 LIVE LINUX ACTIVITY"
-        )
-
+        title = QLabel("🔴 LIVE LINUX ACTIVITY")
         title.setStyleSheet(
             """
             QLabel {
@@ -71,30 +48,13 @@ class LiveActivityWindow(QWidget):
             }
             """
         )
+        layout.addWidget(title)
 
-        layout.addWidget(
-            title
-        )
+        location = QLabel(f"Watching: {LAB_PATH}")
+        layout.addWidget(location)
 
-        location = QLabel(
-            f"Watching: {LAB_PATH}"
-        )
-
-        layout.addWidget(
-            location
-        )
-
-        self.activity_widget = (
-            ActivityTimelineWidget()
-        )
-
-        layout.addWidget(
-            self.activity_widget
-        )
-
-        # --------------------------------------------
-        # Event Bus subscriptions
-        # --------------------------------------------
+        self.activity_widget = ActivityTimelineWidget()
+        layout.addWidget(self.activity_widget)
 
         event_types = [
             "file.created",
@@ -106,71 +66,41 @@ class LiveActivityWindow(QWidget):
         ]
 
         for event_type in event_types:
+            self.event_bus.subscribe(event_type, self.handle_event)
 
-            self.event_bus.subscribe(
-                event_type,
-                self.handle_event
-            )
-
-        # --------------------------------------------
-        # Filesystem monitor
-        # --------------------------------------------
-
-        self.monitor = FileSystemMonitor(
-            LAB_PATH,
-            self.event_bus
-        )
-
+        self.monitor = FileSystemMonitor(LAB_PATH, self.event_bus)
         self.monitor.start()
 
-    # --------------------------------------------
-    # Event handler
-    # --------------------------------------------
+    def handle_event(self, event):
+        self.timeline.record(event)
+        self.activity_widget.add_event(event)
 
-    def handle_event(
-        self,
-        event
-    ):
-
-        # Store event
-        self.timeline.record(
-            event
-        )
-
-        # Display event
-        self.activity_widget.add_event(
-            event
-        )
-
-    # --------------------------------------------
-    # Cleanup
-    # --------------------------------------------
-
-    def closeEvent(
-        self,
-        event
-    ):
-
+    def closeEvent(self, event):
         self.monitor.stop()
-
         event.accept()
 
 
+class TestLiveActivityWindow(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        if not QApplication.instance():
+            cls.app = QApplication(sys.argv)
+        else:
+            cls.app = QApplication.instance()
+
+    def test_window_init_and_close(self):
+        window = LiveActivityWindow()
+        self.assertIsNotNone(window.monitor)
+        window.monitor.stop()
+
+
 def main():
-
-    app = QApplication(
-        sys.argv
-    )
-
+    app = QApplication(sys.argv)
     window = LiveActivityWindow()
-
     window.show()
-
     return app.exec()
 
 
 if __name__ == "__main__":
-
-    sys.exit(
-        main()
-    )
+    sys.exit(main())

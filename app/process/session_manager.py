@@ -1,25 +1,19 @@
 from app.core.event_bus import EventBus
 from app.core.events import SystemEvent
-
 from app.process.discovery import find_shell_processes
 from app.process.registry import TerminalSessionRegistry
 
 
 class TerminalSessionManager:
     """
-    Discovers and tracks shell processes.
+    Discovers and tracks Linux shell processes.
 
-    The manager itself is independent of Qt.
+    The manager maintains state and can either:
+      - publish events directly, or
+      - return generated events to a caller.
 
-    refresh() performs one discovery/diff cycle and returns
-    the events generated during that cycle.
-
-    If an EventBus is supplied, events are also published
-    immediately. This behavior is useful for standalone tests.
-
-    For the Qt background worker, EventBus is intentionally
-    omitted so that GUI callbacks are never executed from
-    the worker thread.
+    The second mode is used by the Qt worker so that
+    EventBus callbacks remain on the GUI thread.
     """
 
     def __init__(
@@ -28,16 +22,26 @@ class TerminalSessionManager:
     ):
         self.event_bus = event_bus
 
-        self.registry = (
-            TerminalSessionRegistry()
-        )
+        self.registry = TerminalSessionRegistry()
 
-    def refresh(self):
+    # ========================================================
+    # Refresh
+    # ========================================================
+
+    def refresh(
+        self,
+        publish: bool = True,
+    ):
         """
         Perform one discovery/diff cycle.
 
         Returns:
             list[SystemEvent]
+
+        If publish=True and an EventBus was supplied,
+        events are also published immediately.
+
+        The Qt background worker uses publish=False.
         """
 
         events = []
@@ -50,7 +54,7 @@ class TerminalSessionManager:
         }
 
         # ====================================================
-        # New and changed sessions
+        # New and existing sessions
         # ====================================================
 
         for session in discovered:
@@ -59,9 +63,9 @@ class TerminalSessionManager:
                 session.pid
             )
 
-            # ------------------------------------------------
-            # New session
-            # ------------------------------------------------
+            # ----------------------------------------------
+            # New shell
+            # ----------------------------------------------
 
             if previous is None:
 
@@ -69,34 +73,28 @@ class TerminalSessionManager:
                     session
                 )
 
-                event = SystemEvent(
-                    event_type="shell.session_created",
-                    data={
-                        "pid": session.pid,
-                        "ppid": session.ppid,
-                        "command": session.command,
-                        "tty": session.tty,
-                        "cwd": (
-                            str(session.cwd)
-                            if session.cwd
-                            else None
-                        ),
-                    },
-                )
-
                 events.append(
-                    event
-                )
-
-                self._publish_if_configured(
-                    event
+                    SystemEvent(
+                        event_type="shell.session_created",
+                        data={
+                            "pid": session.pid,
+                            "ppid": session.ppid,
+                            "command": session.command,
+                            "tty": session.tty,
+                            "cwd": (
+                                str(session.cwd)
+                                if session.cwd
+                                else None
+                            ),
+                        },
+                    )
                 )
 
                 continue
 
-            # ------------------------------------------------
-            # Existing session: CWD changed
-            # ------------------------------------------------
+            # ----------------------------------------------
+            # Existing shell
+            # ----------------------------------------------
 
             if previous.cwd != session.cwd:
 
@@ -116,27 +114,21 @@ class TerminalSessionManager:
                     session
                 )
 
-                event = SystemEvent(
-                    event_type="shell.cwd_changed",
-                    data={
-                        "pid": session.pid,
-                        "tty": session.tty,
-                        "old_path": old_cwd,
-                        "new_path": new_cwd,
-                    },
-                )
-
                 events.append(
-                    event
-                )
-
-                self._publish_if_configured(
-                    event
+                    SystemEvent(
+                        event_type="shell.cwd_changed",
+                        data={
+                            "pid": session.pid,
+                            "tty": session.tty,
+                            "old_path": old_cwd,
+                            "new_path": new_cwd,
+                        },
+                    )
                 )
 
             else:
 
-                # Keep the latest state.
+                # Keep latest process information.
                 self.registry.add(
                     session
                 )
@@ -157,50 +149,44 @@ class TerminalSessionManager:
                     session.pid
                 )
 
-                event = SystemEvent(
-                    event_type="shell.session_removed",
-                    data={
-                        "pid": session.pid,
-                        "ppid": session.ppid,
-                        "command": session.command,
-                        "tty": session.tty,
-                        "cwd": (
-                            str(session.cwd)
-                            if session.cwd
-                            else None
-                        ),
-                    },
-                )
-
                 events.append(
-                    event
+                    SystemEvent(
+                        event_type="shell.session_removed",
+                        data={
+                            "pid": session.pid,
+                            "ppid": session.ppid,
+                            "command": session.command,
+                            "tty": session.tty,
+                            "cwd": (
+                                str(session.cwd)
+                                if session.cwd
+                                else None
+                            ),
+                        },
+                    )
                 )
 
-                self._publish_if_configured(
+        # ====================================================
+        # Optional immediate publication
+        # ====================================================
+
+        if publish and self.event_bus is not None:
+
+            for event in events:
+
+                self.event_bus.publish(
                     event
                 )
 
         return events
 
     # ========================================================
-    # EventBus helper
-    # ========================================================
-
-    def _publish_if_configured(
-        self,
-        event: SystemEvent,
-    ):
-
-        if self.event_bus is not None:
-
-            self.event_bus.publish(
-                event
-            )
-
-    # ========================================================
     # Current sessions
     # ========================================================
 
     def sessions(self):
+        """
+        Return currently tracked sessions.
+        """
 
         return self.registry.all()

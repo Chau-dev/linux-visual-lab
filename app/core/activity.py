@@ -1,3 +1,4 @@
+import threading
 from collections import deque
 from datetime import datetime
 
@@ -6,14 +7,14 @@ from app.core.events import SystemEvent
 
 class ActivityTimeline:
     """
-    Stores recent Linux events.
+    Thread-safe storage for recent Linux events.
 
     The timeline is intentionally independent
     of the GUI.
     """
 
     def __init__(self, max_events=100):
-
+        self._lock = threading.Lock()
         self.events = deque(
             maxlen=max_events
         )
@@ -22,17 +23,18 @@ class ActivityTimeline:
         self,
         event: SystemEvent
     ):
-
-        self.events.append(
-            event
-        )
+        with self._lock:
+            self.events.append(
+                event
+            )
 
     def get_events(self):
-
-        return list(
-            self.events
-        )
+        with self._lock:
+            return list(
+                self.events
+            )
 
     def clear(self):
+        with self._lock:
+            self.events.clear()
 
-        self.events.clear()

@@ -1,89 +1,64 @@
-import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from app.core.event_bus import EventBus
-from app.process.session_manager import (
-    TerminalSessionManager,
-)
+from app.process.session import TerminalSession
+from app.process.session_manager import TerminalSessionManager
 
 
-def on_event(event):
+class TestTerminalSessionManager(unittest.TestCase):
 
-    print(
-        "\nEVENT:",
-        event.event_type
-    )
+    def test_session_lifecycle_events(self):
+        bus = EventBus()
+        events = []
 
-    print(
-        "DATA:",
-        event.data
-    )
+        bus.subscribe("shell.session_created", lambda e: events.append(e))
+        bus.subscribe("shell.session_removed", lambda e: events.append(e))
+        bus.subscribe("shell.cwd_changed", lambda e: events.append(e))
 
+        manager = TerminalSessionManager(bus)
 
-bus = EventBus()
+        # 1. Initial discovery with one session
+        session1 = TerminalSession(
+            pid=1001,
+            ppid=1000,
+            command="bash",
+            tty="/dev/pts/0",
+            cwd=Path("/home/dev/LinuxLab"),
+        )
+        with patch("app.process.session_manager.find_shell_processes", return_value=[session1]):
+            manager.refresh()
 
-bus.subscribe(
-    "shell.session_created",
-    on_event
-)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "shell.session_created")
+        self.assertEqual(events[0].data["pid"], 1001)
 
-bus.subscribe(
-    "shell.session_removed",
-    on_event
-)
+        # 2. Working directory changes
+        session1_moved = TerminalSession(
+            pid=1001,
+            ppid=1000,
+            command="bash",
+            tty="/dev/pts/0",
+            cwd=Path("/home/dev/LinuxLab/subdir"),
+        )
+        with patch("app.process.session_manager.find_shell_processes", return_value=[session1_moved]):
+            manager.refresh()
 
-bus.subscribe(
-    "shell.cwd_changed",
-    on_event
-)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[1].event_type, "shell.cwd_changed")
+        self.assertEqual(events[1].data["old_path"], "/home/dev/LinuxLab")
+        self.assertEqual(events[1].data["new_path"], "/home/dev/LinuxLab/subdir")
 
+        # 3. Session terminated
+        with patch("app.process.session_manager.find_shell_processes", return_value=[]):
+            manager.refresh()
 
-manager = TerminalSessionManager(
-    bus
-)
-
-
-print(
-    "Initial discovery..."
-)
-
-manager.refresh()
-
-print(
-    "\nCurrent sessions:"
-)
-
-for session in manager.sessions():
-
-    print(
-        f"PID={session.pid} "
-        f"TTY={session.tty} "
-        f"CWD={session.cwd}"
-    )
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[2].event_type, "shell.session_removed")
+        self.assertEqual(events[2].data["pid"], 1001)
+        self.assertEqual(len(manager.sessions()), 0)
 
 
-print(
-    "\nNow change directory in a tracked terminal."
-)
-
-print(
-    "Refreshing every 0.5 seconds."
-)
-
-print(
-    "Press Ctrl+C to stop."
-)
-
-
-try:
-
-    while True:
-
-        manager.refresh()
-
-        time.sleep(0.5)
-
-except KeyboardInterrupt:
-
-    print(
-        "\nStopping."
-    )
+if __name__ == "__main__":
+    unittest.main()

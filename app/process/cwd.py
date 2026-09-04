@@ -15,7 +15,7 @@ def get_process_cwd(pid: int) -> Path | None:
     )
 
     try:
-        return proc_cwd.resolve()
+        return proc_cwd.resolve(strict=True)
 
     except (
         FileNotFoundError,
@@ -23,3 +23,4 @@ def get_process_cwd(pid: int) -> Path | None:
         OSError,
     ):
         return None
+

@@ -17,18 +17,23 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QLabel,
+    QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
+    QHBoxLayout,
     QFormLayout,
     QGridLayout,
     QSplitter,
     QFrame,
+    QFileDialog,
+    QTabWidget,
 )
 
 from app.core.event_bus import EventBus
 from app.core.activity import ActivityTimeline
 
+from app.models.filesystem_object import FilesystemObject
 from app.monitors.filesystem import FileSystemMonitor
 
 from app.process.session_worker import (
@@ -47,14 +52,40 @@ from app.visualizers.session_panel import (
     TerminalSessionWidget,
 )
 
-
-# ============================================================
-# Configuration
-# ============================================================
-
-LAB_PATH = Path(
-    "/home/dev/LinuxLab"
+from app.visualizers.permission_simulator import (
+    PermissionSimulatorWidget,
 )
+
+
+
+# ============================================================
+# Configuration & Directory Fallback
+# ============================================================
+
+def get_default_lab_path() -> Path:
+    """
+    Determine a valid, accessible directory for the Linux Lab.
+    Falls back gracefully if /home/dev/LinuxLab is unavailable.
+    """
+    candidates = [
+        Path("/home/dev/LinuxLab"),
+        Path.home() / "LinuxLab",
+        Path.cwd() / "LinuxLab",
+    ]
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if candidate.exists():
+                return candidate.resolve()
+        except OSError:
+            continue
+
+    return Path.home().resolve()
+
+
+LAB_PATH = get_default_lab_path()
+
+
 
 
 # ============================================================
@@ -79,6 +110,12 @@ class MainWindow(QMainWindow):
             1600,
             900
         )
+
+        # ====================================================
+        # Active Watched Path
+        # ====================================================
+
+        self.lab_path = LAB_PATH
 
         # ====================================================
         # Core state
@@ -121,9 +158,7 @@ class MainWindow(QMainWindow):
         # Terminal-session worker
         # ====================================================
 
-        self.session_thread = QThread(
-            self
-        )
+        self.session_thread = QThread()
 
         self.session_worker = TerminalSessionWorker(
             interval_ms=500
@@ -204,8 +239,10 @@ class MainWindow(QMainWindow):
         )
 
         # ----------------------------------------------------
-        # Current location
+        # Location header and Change Folder action
         # ----------------------------------------------------
+
+        header_layout = QHBoxLayout()
 
         self.location_label = QLabel(
             "📍 CURRENT LOCATION: unknown"
@@ -220,8 +257,35 @@ class MainWindow(QMainWindow):
             """
         )
 
-        context_layout.addWidget(
-            self.location_label
+        header_layout.addWidget(
+            self.location_label,
+            1
+        )
+
+        self.change_folder_btn = QPushButton(
+            "📁 Choose Lab Folder..."
+        )
+
+        self.change_folder_btn.setStyleSheet(
+            """
+            QPushButton {
+                padding: 4px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            """
+        )
+
+        self.change_folder_btn.clicked.connect(
+            self.choose_lab_directory
+        )
+
+        header_layout.addWidget(
+            self.change_folder_btn
+        )
+
+        context_layout.addLayout(
+            header_layout
         )
 
         # ----------------------------------------------------
@@ -457,28 +521,32 @@ class MainWindow(QMainWindow):
         # CENTER PANEL
         # ====================================================
 
-        details_panel = QWidget()
+        # ====================================================
+        # CENTER PANEL (Interactive Visual Workstation)
+        # ====================================================
 
-        details_layout = QVBoxLayout(
-            details_panel
+        workstation_panel = QWidget()
+
+        workstation_layout = QVBoxLayout(
+            workstation_panel
         )
 
-        details_layout.setContentsMargins(
+        workstation_layout.setContentsMargins(
             5,
             0,
             5,
             0
         )
 
-        # ----------------------------------------------------
-        # Selected object title
-        # ----------------------------------------------------
-
-        details_title = QLabel(
-            "📄 SELECTED OBJECT"
+        workstation_layout.setSpacing(
+            6
         )
 
-        details_title.setStyleSheet(
+        workstation_title = QLabel(
+            "🔬 INTERACTIVE VISUAL LAB"
+        )
+
+        workstation_title.setStyleSheet(
             """
             QLabel {
                 font-size: 15px;
@@ -488,286 +556,35 @@ class MainWindow(QMainWindow):
             """
         )
 
-        details_layout.addWidget(
-            details_title
+        workstation_layout.addWidget(
+            workstation_title
         )
 
-        # ----------------------------------------------------
-        # Metadata
-        # ----------------------------------------------------
-
-        metadata_widget = QWidget()
-
-        metadata_layout = QFormLayout(
-            metadata_widget
-        )
-
-        metadata_layout.setContentsMargins(
-            4,
-            4,
-            4,
-            4
-        )
-
-        metadata_layout.setSpacing(
-            5
-        )
-
-        self.detail_name = QLabel("-")
-        self.detail_type = QLabel("-")
-        self.detail_path = QLabel("-")
-        self.detail_parent = QLabel("-")
-        self.detail_name_only = QLabel("-")
-        self.detail_size = QLabel("-")
-        self.detail_owner = QLabel("-")
-        self.detail_group = QLabel("-")
-        self.detail_permissions = QLabel("-")
-        self.detail_mode = QLabel("-")
-        self.detail_modified = QLabel("-")
-
-        self.detail_path.setWordWrap(
-            True
-        )
-
-        self.detail_parent.setWordWrap(
-            True
-        )
-
-        metadata_layout.addRow(
-            "Name:",
-            self.detail_name
-        )
-
-        metadata_layout.addRow(
-            "Type:",
-            self.detail_type
-        )
-
-        metadata_layout.addRow(
-            "Path:",
-            self.detail_path
-        )
-
-        metadata_layout.addRow(
-            "Parent:",
-            self.detail_parent
-        )
-
-        metadata_layout.addRow(
-            "Name only:",
-            self.detail_name_only
-        )
-
-        metadata_layout.addRow(
-            "Size:",
-            self.detail_size
-        )
-
-        metadata_layout.addRow(
-            "Owner:",
-            self.detail_owner
-        )
-
-        metadata_layout.addRow(
-            "Group:",
-            self.detail_group
-        )
-
-        metadata_layout.addRow(
-            "Permissions:",
-            self.detail_permissions
-        )
-
-        metadata_layout.addRow(
-            "Mode:",
-            self.detail_mode
-        )
-
-        metadata_layout.addRow(
-            "Modified:",
-            self.detail_modified
-        )
-
-        details_layout.addWidget(
-            metadata_widget
-        )
-
-        # ----------------------------------------------------
-        # Permission title
-        # ----------------------------------------------------
-
-        permissions_title = QLabel(
-            "🔐 PERMISSION VISUALIZER"
-        )
-
-        permissions_title.setStyleSheet(
+        self.workstation_tabs = QTabWidget()
+        self.workstation_tabs.setStyleSheet(
             """
-            QLabel {
-                font-size: 15px;
+            QTabBar::tab {
+                padding: 8px 16px;
                 font-weight: bold;
-                padding-top: 12px;
-                padding-bottom: 6px;
+                font-size: 12px;
             }
             """
         )
 
-        details_layout.addWidget(
-            permissions_title
+        # Tab 1: Permissions & Access Lab
+        self.permission_visualizer = PermissionSimulatorWidget()
+        self.workstation_tabs.addTab(
+            self.permission_visualizer,
+            "🔐 Permissions & Access Lab"
         )
 
-        # ----------------------------------------------------
-        # Permission grid
-        # ----------------------------------------------------
-
-        permission_grid_widget = QWidget()
-
-        self.permission_grid = QGridLayout(
-            permission_grid_widget
-        )
-
-        self.permission_grid.setContentsMargins(
-            4,
-            4,
-            4,
-            4
-        )
-
-        self.permission_grid.setHorizontalSpacing(
-            12
-        )
-
-        headers = [
-            "",
-            "OWNER",
-            "GROUP",
-            "OTHER",
-        ]
-
-        for column, header in enumerate(
-            headers
-        ):
-
-            label = QLabel(
-                header
-            )
-
-            label.setAlignment(
-                Qt.AlignmentFlag.AlignCenter
-            )
-
-            label.setStyleSheet(
-                "font-weight: bold;"
-            )
-
-            self.permission_grid.addWidget(
-                label,
-                0,
-                column
-            )
-
-        permission_names = [
-            "READ",
-            "WRITE",
-            "EXECUTE",
-        ]
-
-        self.permission_cells = {}
-
-        for row, permission_name in enumerate(
-            permission_names,
-            start=1
-        ):
-
-            label = QLabel(
-                permission_name
-            )
-
-            label.setStyleSheet(
-                "font-weight: bold;"
-            )
-
-            self.permission_grid.addWidget(
-                label,
-                row,
-                0
-            )
-
-            for column, category in enumerate(
-                [
-                    "owner",
-                    "group",
-                    "other",
-                ],
-                start=1
-            ):
-
-                value = QLabel(
-                    "—"
-                )
-
-                value.setAlignment(
-                    Qt.AlignmentFlag.AlignCenter
-                )
-
-                value.setMinimumWidth(
-                    60
-                )
-
-                self.permission_grid.addWidget(
-                    value,
-                    row,
-                    column
-                )
-
-                self.permission_cells[
-                    (
-                        permission_name,
-                        category
-                    )
-                ] = value
-
-        details_layout.addWidget(
-            permission_grid_widget
-        )
-
-        # ----------------------------------------------------
-        # Permission explanations
-        # ----------------------------------------------------
-
-        self.permission_symbolic = QLabel(
-            "Symbolic: -"
-        )
-
-        self.permission_numeric = QLabel(
-            "Numeric: -"
-        )
-
-        self.permission_math = QLabel(
-            "Permission math: -"
-        )
-
-        self.permission_math.setWordWrap(
-            True
-        )
-
-        details_layout.addWidget(
-            self.permission_symbolic
-        )
-
-        details_layout.addWidget(
-            self.permission_numeric
-        )
-
-        details_layout.addWidget(
-            self.permission_math
-        )
-
-        details_layout.addStretch(
+        workstation_layout.addWidget(
+            self.workstation_tabs,
             1
         )
 
         workspace_splitter.addWidget(
-            details_panel
+            workstation_panel
         )
 
         # ====================================================
@@ -805,15 +622,15 @@ class MainWindow(QMainWindow):
             activity_title
         )
 
-        watching_label = QLabel(
-            f"Watching: {LAB_PATH}"
+        self.watching_label = QLabel(
+            f"Watching: {self.lab_path}"
         )
 
-        watching_label.setWordWrap(
+        self.watching_label.setWordWrap(
             True
         )
 
-        watching_label.setStyleSheet(
+        self.watching_label.setStyleSheet(
             """
             QLabel {
                 font-size: 12px;
@@ -822,7 +639,7 @@ class MainWindow(QMainWindow):
         )
 
         activity_layout.addWidget(
-            watching_label
+            self.watching_label
         )
 
         self.activity_widget = (
@@ -860,7 +677,7 @@ class MainWindow(QMainWindow):
         # ====================================================
 
         self.monitor = FileSystemMonitor(
-            LAB_PATH,
+            self.lab_path,
             self.event_bus
         )
 
@@ -952,6 +769,66 @@ class MainWindow(QMainWindow):
         )
 
     # ========================================================
+    # Filesystem event from monitor (GUI thread)
+    # ========================================================
+
+    def handle_filesystem_event(
+        self,
+        event
+    ):
+        """
+        Receives filesystem events bridged safely from Watchdog
+        via Qt signals onto the GUI thread.
+        """
+        self.event_bus.publish(
+            event
+        )
+
+    # ========================================================
+    # Dynamic Lab Directory Selection
+    # ========================================================
+
+    def choose_lab_directory(
+        self
+    ):
+        """
+        Open a directory picker dialog allowing the user to select
+        any folder to watch in the Visual Lab.
+        """
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select Linux Lab Directory",
+            str(self.lab_path),
+        )
+
+        if selected:
+            self.change_lab_directory(
+                Path(selected)
+            )
+
+    def change_lab_directory(
+        self,
+        new_path: Path
+    ):
+        """
+        Dynamically update the watched directory.
+        """
+        self.lab_path = Path(new_path).resolve()
+
+        if hasattr(self, "watching_label"):
+            self.watching_label.setText(
+                f"Watching: {self.lab_path}"
+            )
+
+        if hasattr(self, "monitor"):
+            self.monitor.set_path(
+                self.lab_path
+            )
+
+        self.build_initial_tree()
+        self.update_focused_location_from_snapshot()
+
+    # ========================================================
     # Worker event
     # ========================================================
 
@@ -967,6 +844,7 @@ class MainWindow(QMainWindow):
             event
         )
 
+
     # ========================================================
     # Worker state snapshot
     # ========================================================
@@ -978,15 +856,20 @@ class MainWindow(QMainWindow):
 
         # Build one GUI-side snapshot.
 
-        self.session_snapshot = {
-            session.pid: session
-            for session in sessions
-        }
+        if isinstance(sessions, dict):
+            self.session_snapshot = sessions
+            session_list = list(sessions.values())
+        else:
+            self.session_snapshot = {
+                session.pid: session
+                for session in sessions
+            }
+            session_list = list(sessions)
 
         # Update session UI.
 
         self.session_widget.update_sessions(
-            sessions
+            session_list
         )
 
         # Ensure that the focused PID still exists.
@@ -997,6 +880,7 @@ class MainWindow(QMainWindow):
         # session snapshot that the session panel displays.
 
         self.update_focused_location_from_snapshot()
+
 
     # ========================================================
     # Worker error
@@ -1262,16 +1146,18 @@ class MainWindow(QMainWindow):
 
         self.tree.clear()
 
+        root_name = self.lab_path.name or str(self.lab_path)
+
         root_item = QTreeWidgetItem(
             [
-                "📁 LinuxLab"
+                f"📁 {root_name}"
             ]
         )
 
         root_item.setData(
             0,
             Qt.ItemDataRole.UserRole,
-            str(LAB_PATH)
+            str(self.lab_path)
         )
 
         self.tree.addTopLevelItem(
@@ -1280,7 +1166,7 @@ class MainWindow(QMainWindow):
 
         self.add_directory_contents(
             root_item,
-            LAB_PATH
+            self.lab_path
         )
 
         root_item.setExpanded(
@@ -1304,7 +1190,7 @@ class MainWindow(QMainWindow):
             entries = sorted(
                 directory.iterdir(),
                 key=lambda path: (
-                    not path.is_dir(),
+                    not path.is_dir() if not path.is_symlink() else True,
                     path.name.lower()
                 )
             )
@@ -1318,20 +1204,41 @@ class MainWindow(QMainWindow):
 
         for path in entries:
 
+            try:
 
-            if path.is_symlink():
+                if path.is_symlink():
 
-                icon = "🔗"
+                    icon = "🔗"
 
-            elif path.is_dir():
+                elif path.is_dir():
 
-                icon = "📁"
+                    icon = "📁"
 
-            elif path.is_file():
+                elif path.is_file():
 
-                icon = "📄"
+                    icon = "📄"
 
-            else:
+                elif path.is_fifo():
+
+                    icon = "🪈"
+
+                elif path.is_socket():
+
+                    icon = "🔌"
+
+                elif path.is_block_device():
+
+                    icon = "💾"
+
+                elif path.is_char_device():
+
+                    icon = "📟"
+
+                else:
+
+                    icon = "❓"
+
+            except (OSError, PermissionError):
 
                 icon = "❓"
 
@@ -1351,7 +1258,7 @@ class MainWindow(QMainWindow):
                 item
             )
 
-            if path.is_dir():
+            if path.is_dir() and not path.is_symlink():
 
                 self.add_directory_contents(
                     item,
@@ -1635,9 +1542,7 @@ class MainWindow(QMainWindow):
             path
         )
 
-        self.update_file_details(
-            self.selected_path
-        )
+        self.refresh_selected_details()
 
     # ========================================================
     # Refresh selected details
@@ -1648,9 +1553,16 @@ class MainWindow(QMainWindow):
     ):
 
         if self.selected_path is None:
+
+            self.clear_details()
+
             return
 
-        if not self.selected_path.exists():
+        fs_object = FilesystemObject.from_path(
+            self.selected_path
+        )
+
+        if fs_object is None:
 
             self.clear_details()
 
@@ -1659,156 +1571,20 @@ class MainWindow(QMainWindow):
             return
 
         self.update_file_details(
-            self.selected_path
+            fs_object
         )
 
     # ========================================================
-    # File metadata
+    # Visualizer dispatch
     # ========================================================
 
     def update_file_details(
         self,
-        path
+        fs_object: FilesystemObject
     ):
 
-        try:
-
-            info = os.stat(
-                path
-            )
-
-        except OSError as error:
-
-            self.clear_details()
-
-            self.detail_name.setText(
-                "Unavailable"
-            )
-
-            self.detail_type.setText(
-                str(error)
-            )
-
-            return
-
-        path_obj = Path(
-            path
-        )
-
-        self.detail_name.setText(
-            path_obj.name
-            or str(path_obj)
-        )
-
-        if path_obj.is_symlink():
-
-            file_type = "Symbolic link"
-
-        elif path_obj.is_dir():
-
-            file_type = "Directory"
-
-        elif path_obj.is_file():
-
-            file_type = "Regular file"
-
-        else:
-
-            file_type = "Other"
-
-        self.detail_type.setText(
-            file_type
-        )
-
-        self.detail_path.setText(
-            str(path_obj)
-        )
-
-        self.detail_parent.setText(
-            str(path_obj.parent)
-        )
-
-        self.detail_name_only.setText(
-            path_obj.name
-        )
-
-        self.detail_size.setText(
-            f"{info.st_size:,} bytes"
-        )
-
-        try:
-
-            import pwd
-
-            owner = pwd.getpwuid(
-                info.st_uid
-            ).pw_name
-
-        except Exception:
-
-            owner = str(
-                info.st_uid
-            )
-
-        self.detail_owner.setText(
-            owner
-        )
-
-        try:
-
-            import grp
-
-            group = grp.getgrgid(
-                info.st_gid
-            ).gr_name
-
-        except Exception:
-
-            group = str(
-                info.st_gid
-            )
-
-        self.detail_group.setText(
-            group
-        )
-
-        permissions = stat.filemode(
-            info.st_mode
-        )
-
-        self.detail_permissions.setText(
-            permissions
-        )
-
-        self.permission_symbolic.setText(
-            "Symbolic: "
-            + permissions
-        )
-
-        permission_mode = (
-            info.st_mode & 0o777
-        )
-
-        self.detail_mode.setText(
-            oct(permission_mode)
-        )
-
-        self.update_permission_visualizer(
-            permission_mode
-        )
-
-        self.update_permission_math(
-            permission_mode
-        )
-
-        modified = datetime.fromtimestamp(
-            info.st_mtime
-        )
-
-        self.detail_modified.setText(
-            modified.strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+        self.permission_visualizer.set_context(
+            fs_object
         )
 
     # ========================================================
@@ -1819,164 +1595,8 @@ class MainWindow(QMainWindow):
         self
     ):
 
-        self.detail_name.setText("-")
-        self.detail_type.setText("-")
-        self.detail_path.setText("-")
-        self.detail_parent.setText("-")
-        self.detail_name_only.setText("-")
-        self.detail_size.setText("-")
-        self.detail_owner.setText("-")
-        self.detail_group.setText("-")
-        self.detail_permissions.setText("-")
-        self.detail_mode.setText("-")
-        self.detail_modified.setText("-")
+        self.permission_visualizer.clear_context()
 
-        self.permission_symbolic.setText(
-            "Symbolic: -"
-        )
-
-        self.permission_numeric.setText(
-            "Numeric: -"
-        )
-
-        self.permission_math.setText(
-            "Permission math: -"
-        )
-
-        for cell in (
-            self.permission_cells.values()
-        ):
-
-            cell.setText(
-                "—"
-            )
-
-    # ========================================================
-    # Permission visualizer
-    # ========================================================
-
-    def update_permission_visualizer(
-        self,
-        mode
-    ):
-
-        owner = (
-            mode >> 6
-        ) & 7
-
-        group = (
-            mode >> 3
-        ) & 7
-
-        other = mode & 7
-
-        values = {
-            "owner": owner,
-            "group": group,
-            "other": other,
-        }
-
-        permission_bits = {
-            "READ": 4,
-            "WRITE": 2,
-            "EXECUTE": 1,
-        }
-
-        for permission_name, bit in (
-            permission_bits.items()
-        ):
-
-            for category, value in (
-                values.items()
-            ):
-
-                cell = self.permission_cells[
-                    (
-                        permission_name,
-                        category
-                    )
-                ]
-
-                if value & bit:
-
-                    cell.setText(
-                        "✓"
-                    )
-
-                else:
-
-                    cell.setText(
-                        "✗"
-                    )
-
-        self.permission_numeric.setText(
-            "Numeric: "
-            + f"{owner}{group}{other}"
-        )
-
-    # ========================================================
-    # Permission mathematics
-    # ========================================================
-
-    def update_permission_math(
-        self,
-        mode
-    ):
-
-        owner = (
-            mode >> 6
-        ) & 7
-
-        group = (
-            mode >> 3
-        ) & 7
-
-        other = mode & 7
-
-        def explain(
-            value
-        ):
-
-            parts = []
-
-            if value & 4:
-
-                parts.append(
-                    "4 (READ)"
-                )
-
-            if value & 2:
-
-                parts.append(
-                    "2 (WRITE)"
-                )
-
-            if value & 1:
-
-                parts.append(
-                    "1 (EXECUTE)"
-                )
-
-            if not parts:
-
-                parts.append(
-                    "0"
-                )
-
-            return " + ".join(
-                parts
-            )
-
-        text = (
-            "Permission math:\n"
-            f"OWNER = {explain(owner)} = {owner}\n"
-            f"GROUP = {explain(group)} = {group}\n"
-            f"OTHER = {explain(other)} = {other}"
-        )
-
-        self.permission_math.setText(
-            text
-        )
 
     # ========================================================
     # Filesystem created

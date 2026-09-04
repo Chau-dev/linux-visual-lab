@@ -10,36 +10,32 @@ from app.core.events import SystemEvent
 
 class FileSystemSignals(QObject):
     """
-    Qt signals used by the existing GUI.
+    Qt signals used by the GUI.
 
-    We keep these because the current GUI already depends on them.
+    All signals cross thread boundaries safely into the GUI thread.
     """
 
     created = Signal(str, bool)
     deleted = Signal(str, bool)
     modified = Signal(str)
     moved = Signal(str, str)
+    event_detected = Signal(object)
 
 
 class LinuxLabFileHandler(FileSystemEventHandler):
     """
     Receives real filesystem events from watchdog.
 
-    Each event is sent in two directions:
-
-    1. Existing Qt signal system
-    2. New Event Bus
+    Emits Qt signals which are delivered safely onto the GUI thread.
     """
 
     def __init__(
         self,
-        signals,
-        event_bus=None
+        signals: FileSystemSignals,
     ):
         super().__init__()
 
         self.signals = signals
-        self.event_bus = event_bus
 
     # --------------------------------------------------------
     # Created
@@ -47,30 +43,28 @@ class LinuxLabFileHandler(FileSystemEventHandler):
 
     def on_created(self, event):
 
-        # Existing GUI system
         self.signals.created.emit(
             event.src_path,
             event.is_directory
         )
 
-        # New Event Bus system
-        if self.event_bus:
+        event_type = (
+            "directory.created"
+            if event.is_directory
+            else "file.created"
+        )
 
-            event_type = (
-                "directory.created"
-                if event.is_directory
-                else "file.created"
-            )
+        system_event = SystemEvent(
+            event_type=event_type,
+            data={
+                "path": event.src_path,
+                "is_directory": event.is_directory,
+            }
+        )
 
-            self.event_bus.publish(
-                SystemEvent(
-                    event_type=event_type,
-                    data={
-                        "path": event.src_path,
-                        "is_directory": event.is_directory,
-                    }
-                )
-            )
+        self.signals.event_detected.emit(
+            system_event
+        )
 
     # --------------------------------------------------------
     # Deleted
@@ -78,30 +72,28 @@ class LinuxLabFileHandler(FileSystemEventHandler):
 
     def on_deleted(self, event):
 
-        # Existing GUI system
         self.signals.deleted.emit(
             event.src_path,
             event.is_directory
         )
 
-        # New Event Bus system
-        if self.event_bus:
+        event_type = (
+            "directory.deleted"
+            if event.is_directory
+            else "file.deleted"
+        )
 
-            event_type = (
-                "directory.deleted"
-                if event.is_directory
-                else "file.deleted"
-            )
+        system_event = SystemEvent(
+            event_type=event_type,
+            data={
+                "path": event.src_path,
+                "is_directory": event.is_directory,
+            }
+        )
 
-            self.event_bus.publish(
-                SystemEvent(
-                    event_type=event_type,
-                    data={
-                        "path": event.src_path,
-                        "is_directory": event.is_directory,
-                    }
-                )
-            )
+        self.signals.event_detected.emit(
+            system_event
+        )
 
     # --------------------------------------------------------
     # Modified
@@ -109,26 +101,23 @@ class LinuxLabFileHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
 
-        # Ignore directory modifications for now.
         if event.is_directory:
             return
 
-        # Existing GUI system
         self.signals.modified.emit(
             event.src_path
         )
 
-        # New Event Bus system
-        if self.event_bus:
+        system_event = SystemEvent(
+            event_type="file.modified",
+            data={
+                "path": event.src_path,
+            }
+        )
 
-            self.event_bus.publish(
-                SystemEvent(
-                    event_type="file.modified",
-                    data={
-                        "path": event.src_path,
-                    }
-                )
-            )
+        self.signals.event_detected.emit(
+            system_event
+        )
 
     # --------------------------------------------------------
     # Moved
@@ -136,29 +125,27 @@ class LinuxLabFileHandler(FileSystemEventHandler):
 
     def on_moved(self, event):
 
-        # Existing GUI system
         self.signals.moved.emit(
             event.src_path,
             event.dest_path
         )
 
-        # New Event Bus system
-        if self.event_bus:
+        system_event = SystemEvent(
+            event_type="file.moved",
+            data={
+                "old_path": event.src_path,
+                "new_path": event.dest_path,
+            }
+        )
 
-            self.event_bus.publish(
-                SystemEvent(
-                    event_type="file.moved",
-                    data={
-                        "old_path": event.src_path,
-                        "new_path": event.dest_path,
-                    }
-                )
-            )
+        self.signals.event_detected.emit(
+            system_event
+        )
 
 
 class FileSystemMonitor:
     """
-    Watches the LinuxLab directory recursively.
+    Watches a target directory recursively.
     """
 
     def __init__(
@@ -169,20 +156,30 @@ class FileSystemMonitor:
 
         self.path = Path(path)
 
-        # Existing Qt signal system
+        # Qt signals system
         self.signals = FileSystemSignals()
 
-        # New Event Bus
+        # Event Bus
         self.event_bus = event_bus
 
-        # watchdog observer
-        self.observer = Observer()
+        if self.event_bus is not None:
+            self.signals.event_detected.connect(
+                self._publish_to_event_bus
+            )
 
-        # Handler receives BOTH systems
+        # Watchdog handler
         self.handler = LinuxLabFileHandler(
             self.signals,
-            self.event_bus
         )
+
+        # Watchdog observer
+        self.observer = Observer()
+
+    def _publish_to_event_bus(self, event: SystemEvent):
+        """Bridge Qt signal to EventBus."""
+        if self.event_bus:
+            self.event_bus.publish(event)
+
 
     # --------------------------------------------------------
     # Start monitoring
@@ -190,13 +187,33 @@ class FileSystemMonitor:
 
     def start(self):
 
-        self.observer.schedule(
-            self.handler,
-            str(self.path),
-            recursive=True
-        )
+        if not self.path.exists():
 
-        self.observer.start()
+            try:
+                self.path.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+            except OSError:
+                return False
+
+        if not hasattr(self, "observer") or self.observer is None:
+            self.observer = Observer()
+
+        try:
+            self.observer.schedule(
+                self.handler,
+                str(self.path),
+                recursive=True
+            )
+
+            self.observer.start()
+
+            return True
+
+        except Exception:
+
+            return False
 
     # --------------------------------------------------------
     # Stop monitoring
@@ -204,6 +221,26 @@ class FileSystemMonitor:
 
     def stop(self):
 
-        self.observer.stop()
+        if hasattr(self, "observer") and self.observer is not None:
 
-        self.observer.join()
+            try:
+                if self.observer.is_alive():
+                    self.observer.stop()
+                    self.observer.join(timeout=2.0)
+            except Exception:
+                pass
+
+    # --------------------------------------------------------
+    # Change watched path dynamically
+    # --------------------------------------------------------
+
+    def set_path(self, new_path) -> bool:
+        """
+        Switch to watching a different directory.
+        """
+        self.stop()
+        self.path = Path(new_path)
+        self.observer = Observer()
+        return self.start()
+
+

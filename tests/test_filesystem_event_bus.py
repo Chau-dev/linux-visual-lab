@@ -1,4 +1,5 @@
 import time
+import unittest
 
 from app.core.event_bus import EventBus
 from app.monitors.filesystem import FileSystemMonitor
@@ -7,127 +8,43 @@ from app.core.activity import ActivityTimeline
 LAB_PATH = "/home/dev/LinuxLab"
 
 
-def on_event(event):
+class TestFilesystemEventBusIntegration(unittest.TestCase):
 
-    print(
-        "EVENT:",
-        event.event_type
-    )
+    def test_event_bus_and_activity_recording(self):
+        bus = EventBus()
+        timeline = ActivityTimeline()
 
-    print(
-        "DATA:",
-        event.data
-    )
+        bus.subscribe("file.created", timeline.record)
+        bus.subscribe("file.modified", timeline.record)
+        bus.subscribe("file.deleted", timeline.record)
 
+        from app.core.events import SystemEvent
 
-bus = EventBus()
-timeline = ActivityTimeline()
-
-bus.subscribe(
-    "file.created",
-    timeline.record
-)
-
-bus.subscribe(
-    "file.modified",
-    timeline.record
-)
-
-bus.subscribe(
-    "file.deleted",
-    timeline.record
-)
-
-bus.subscribe(
-    "file.moved",
-    timeline.record
-)
-
-bus.subscribe(
-    "directory.created",
-    timeline.record
-)
-
-bus.subscribe(
-    "directory.deleted",
-    timeline.record
-)
-bus.subscribe(
-    "file.created",
-    on_event
-)
-
-bus.subscribe(
-    "file.modified",
-    on_event
-)
-
-bus.subscribe(
-    "file.deleted",
-    on_event
-)
-
-bus.subscribe(
-    "directory.created",
-    on_event
-)
-
-bus.subscribe(
-    "directory.deleted",
-    on_event
-)
-
-bus.subscribe(
-    "file.moved",
-    on_event
-)
+        bus.publish(SystemEvent(event_type="file.created", data={"path": "/tmp/a.txt"}))
+        self.assertEqual(len(timeline.get_events()), 1)
 
 
-monitor = FileSystemMonitor(
-    LAB_PATH,
-    bus
-)
+if __name__ == "__main__":
+    def on_event(event):
+        print("EVENT:", event.event_type)
+        print("DATA:", event.data)
 
-monitor.start()
+    bus = EventBus()
+    timeline = ActivityTimeline()
 
-print(
-    "Watching:",
-    LAB_PATH
-)
+    for event_type in ["file.created", "file.modified", "file.deleted", "file.moved", "directory.created", "directory.deleted"]:
+        bus.subscribe(event_type, timeline.record)
+        bus.subscribe(event_type, on_event)
 
-print(
-    "Create/change/delete files "
-    "inside LinuxLab."
-)
+    monitor = FileSystemMonitor(LAB_PATH, bus)
+    monitor.start()
 
-print(
-    "Press Ctrl+C to stop."
-)
+    print("Watching:", LAB_PATH)
+    print("Press Ctrl+C to stop.")
 
-try:
-
-    while True:
-
-        time.sleep(1)
-
-except KeyboardInterrupt:
-
-    print(
-        "\nStopping..."
-    )
-
-    monitor.stop()
-
-    print(
-        "\n--- ACTIVITY TIMELINE ---"
-    )
-
-    for event in timeline.get_events():
-
-        print(
-            event.timestamp.strftime(
-                "%H:%M:%S"
-            ),
-            event.event_type,
-            event.data
-        )
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping...")
+        monitor.stop()

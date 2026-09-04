@@ -1,5 +1,8 @@
 import sys
 import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from app.core.event_bus import EventBus
 from app.process.focused_cwd_tracker import (
@@ -10,81 +13,48 @@ from app.process.focused_session import (
 )
 
 
-if len(sys.argv) != 2:
+class TestFocusedCwdTracker(unittest.TestCase):
 
-    print(
-        "Usage: "
-        "python -m tests.test_focused_cwd_tracker "
-        "<bash_pid>"
-    )
+    def test_check_emits_event_on_cwd_change(self):
+        bus = EventBus()
+        events = []
+        bus.subscribe("shell.focused_cwd_changed", lambda e: events.append(e))
 
-    sys.exit(1)
+        focused = FocusedSession()
+        focused.set_pid(1234)
+        tracker = FocusedCwdTracker(focused, bus)
 
+        # Initial check establishes baseline
+        with patch("app.process.focused_cwd_tracker.get_process_cwd", return_value=Path("/tmp")):
+            tracker.check()
 
-pid = int(
-    sys.argv[1]
-)
+        self.assertEqual(len(events), 0)
 
+        # Second check with changed CWD emits event
+        with patch("app.process.focused_cwd_tracker.get_process_cwd", return_value=Path("/home/dev")):
+            tracker.check()
 
-def on_event(event):
-
-    print()
-    print(
-        "EVENT:",
-        event.event_type
-    )
-
-    print(
-        "DATA:",
-        event.data
-    )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "shell.focused_cwd_changed")
+        self.assertEqual(events[0].data["old_path"], "/tmp")
+        self.assertEqual(events[0].data["new_path"], "/home/dev")
 
 
-bus = EventBus()
-
-bus.subscribe(
-    "shell.focused_cwd_changed",
-    on_event
-)
-
-
-focused = FocusedSession()
-
-focused.set_pid(
-    pid
-)
-
-
-tracker = FocusedCwdTracker(
-    focused,
-    bus
-)
-
-
-print(
-    "Tracking focused PID:",
-    pid
-)
-
-print(
-    "Change directory in that terminal."
-)
-
-print(
-    "Press Ctrl+C to stop."
-)
-
-
-try:
-
-    while True:
-
-        tracker.check()
-
-        time.sleep(0.5)
-
-except KeyboardInterrupt:
-
-    print(
-        "\nStopping."
-    )
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1].isdigit():
+        pid = int(sys.argv[1])
+        bus = EventBus()
+        bus.subscribe("shell.focused_cwd_changed", lambda e: print("EVENT:", e.event_type, e.data))
+        focused = FocusedSession()
+        focused.set_pid(pid)
+        tracker = FocusedCwdTracker(focused, bus)
+        print("Tracking focused PID:", pid)
+        print("Press Ctrl+C to stop.")
+        try:
+            while True:
+                tracker.check()
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\nStopping.")
+    else:
+        unittest.main()

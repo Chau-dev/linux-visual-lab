@@ -1,66 +1,43 @@
 import sys
+import unittest
 
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from app.core.event_bus import EventBus
 from app.process.session_worker import TerminalSessionWorker
 
 
-def on_event(event):
+class TestTerminalSessionWorker(unittest.TestCase):
 
-    print(
-        "EVENT:",
-        event.event_type
-    )
+    @classmethod
+    def setUpClass(cls):
+        if not QApplication.instance():
+            cls.app = QApplication(sys.argv)
+        else:
+            cls.app = QApplication.instance()
 
-    print(
-        "DATA:",
-        event.data
-    )
-
-
-app = QApplication(
-    sys.argv
-)
-
-bus = EventBus()
-
-bus.subscribe(
-    "shell.session_created",
-    on_event
-)
-
-bus.subscribe(
-    "shell.session_removed",
-    on_event
-)
-
-bus.subscribe(
-    "shell.cwd_changed",
-    on_event
-)
+    def test_worker_init_and_refresh(self):
+        worker = TerminalSessionWorker(interval_ms=500)
+        self.assertIsNotNone(worker.manager)
+        # Running refresh directly
+        worker._running = True
+        worker.refresh()
+        worker._running = False
 
 
-worker = TerminalSessionWorker(
-    bus,
-    interval_ms=500
-)
+if __name__ == "__main__":
+    from PySide6.QtCore import QTimer
 
-worker.start()
+    def on_event(event):
+        print("EVENT:", event.event_type, event.data)
 
+    app = QApplication(sys.argv)
+    worker = TerminalSessionWorker(interval_ms=500)
+    worker.event_detected.connect(on_event)
+    worker.start()
 
-def stop():
-    worker.stop()
-    app.quit()
+    def stop():
+        worker.stop()
+        app.quit()
 
-
-QTimer.singleShot(
-    30000,
-    stop
-)
-
-
-sys.exit(
-    app.exec()
-)
+    QTimer.singleShot(3000, stop)
+    sys.exit(app.exec())

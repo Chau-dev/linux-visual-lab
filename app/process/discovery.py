@@ -15,7 +15,7 @@ def get_process_tty(
     )
 
     try:
-        target = fd_path.resolve()
+        target = fd_path.resolve(strict=True)
 
     except (
         FileNotFoundError,
@@ -84,7 +84,12 @@ def find_shell_processes():
 
     proc_root = Path("/proc")
 
-    for entry in proc_root.iterdir():
+    try:
+        entries = list(proc_root.iterdir())
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
+
+    for entry in entries:
 
         if not entry.name.isdigit():
             continue
@@ -103,6 +108,7 @@ def find_shell_processes():
             FileNotFoundError,
             PermissionError,
             OSError,
+            ProcessLookupError,
         ):
             continue
 
@@ -111,14 +117,19 @@ def find_shell_processes():
             "sh",
             "zsh",
             "fish",
+            "dash",
+            "ksh",
+            "tcsh",
+            "csh",
         }:
             continue
+
 
         cwd_path = entry / "cwd"
 
         try:
 
-            cwd = cwd_path.resolve()
+            cwd = cwd_path.resolve(strict=True)
 
         except (
             FileNotFoundError,

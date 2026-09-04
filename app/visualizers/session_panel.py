@@ -41,7 +41,7 @@ class TerminalSessionWidget(QListWidget):
 
     def update_sessions(
         self,
-        sessions: list[TerminalSession],
+        sessions: list[TerminalSession] | dict[int, TerminalSession],
     ):
         """
         Update the displayed sessions while preserving:
@@ -51,15 +51,21 @@ class TerminalSessionWidget(QListWidget):
         - session row order
         """
 
-        sessions = sorted(
-            sessions,
+        if isinstance(sessions, dict):
+            session_list = list(sessions.values())
+        else:
+            session_list = list(sessions)
+
+        session_list = sorted(
+            session_list,
             key=lambda session: session.pid
         )
 
         new_pids = [
             session.pid
-            for session in sessions
+            for session in session_list
         ]
+
 
         current_pids = [
             self.item(index).data(
@@ -88,7 +94,7 @@ class TerminalSessionWidget(QListWidget):
             try:
 
                 for index, session in enumerate(
-                    sessions
+                    session_list
                 ):
 
                     item = self.item(
@@ -132,7 +138,7 @@ class TerminalSessionWidget(QListWidget):
 
             self.clear()
 
-            for session in sessions:
+            for session in session_list:
 
                 item = self.create_item(
                     session
@@ -141,6 +147,7 @@ class TerminalSessionWidget(QListWidget):
                 self.addItem(
                     item
                 )
+
 
                 if session.pid == previous_pid:
 

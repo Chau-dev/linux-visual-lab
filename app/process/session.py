@@ -9,8 +9,8 @@ class TerminalSession:
     """
 
     pid: int
-    ppid: int
     command: str
-    cwd: Path | None
-    tty: str | None
-    cwd: Path | None
+    ppid: int | None = None
+    cwd: Path | None = None
+    tty: str | None = None
+

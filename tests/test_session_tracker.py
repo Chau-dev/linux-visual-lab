@@ -1,85 +1,48 @@
 import os
 import sys
 import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from app.core.event_bus import EventBus
 from app.process.session_tracker import TerminalSessionTracker
 
 
-if len(sys.argv) != 2:
-    print(
-        "Usage: python -m tests.test_session_tracker <shell_pid>"
-    )
-    sys.exit(1)
+class TestTerminalSessionTracker(unittest.TestCase):
+
+    def test_tracker_emits_on_cwd_change(self):
+        bus = EventBus()
+        events = []
+        bus.subscribe("shell.cwd_changed", lambda e: events.append(e))
+
+        with patch("app.process.session_tracker.get_process_cwd", return_value=Path("/tmp")):
+            tracker = TerminalSessionTracker(1234, bus)
+
+        # CWD changes
+        with patch("app.process.session_tracker.get_process_cwd", return_value=Path("/home/dev")):
+            tracker.check()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event_type, "shell.cwd_changed")
+        self.assertEqual(events[0].data["pid"], 1234)
+        self.assertEqual(events[0].data["old_path"], "/tmp")
+        self.assertEqual(events[0].data["new_path"], "/home/dev")
 
 
-shell_pid = int(sys.argv[1])
-
-
-def on_cwd_changed(event):
-
-    print(
-        "\nCWD CHANGED"
-    )
-
-    print(
-        "PID:",
-        event.data["pid"]
-    )
-
-    print(
-        "OLD:",
-        event.data["old_path"]
-    )
-
-    print(
-        "NEW:",
-        event.data["new_path"]
-    )
-
-
-bus = EventBus()
-
-bus.subscribe(
-    "shell.cwd_changed",
-    on_cwd_changed
-)
-
-
-tracker = TerminalSessionTracker(
-    shell_pid,
-    bus
-)
-
-
-print(
-    "Tracking shell PID:",
-    shell_pid
-)
-
-print(
-    "Watching /proc/<PID>/cwd"
-)
-
-print(
-    "Change directory in the target terminal."
-)
-
-print(
-    "Press Ctrl+C to stop."
-)
-
-
-try:
-
-    while True:
-
-        tracker.check()
-
-        time.sleep(0.5)
-
-except KeyboardInterrupt:
-
-    print(
-        "\nStopping."
-    )
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1].isdigit():
+        shell_pid = int(sys.argv[1])
+        bus = EventBus()
+        bus.subscribe("shell.cwd_changed", lambda e: print("\nCWD CHANGED:", e.data))
+        tracker = TerminalSessionTracker(shell_pid, bus)
+        print("Tracking shell PID:", shell_pid)
+        print("Press Ctrl+C to stop.")
+        try:
+            while True:
+                tracker.check()
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\nStopping.")
+    else:
+        unittest.main()
