@@ -77,6 +77,9 @@ class TestIntegration(unittest.TestCase):
 
         # 6. Clean close
         window.session_thread.stop()
+        window.process_monitor.stop()
+        window.memory_monitor.stop()
+        window.cpu_monitor.stop()
         window.fs_monitor.stop()
         window.close()
 

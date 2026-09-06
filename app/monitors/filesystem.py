@@ -57,6 +57,8 @@ class LinuxLabFileHandler(FileSystemEventHandler):
                 "path": path_str,
                 "is_directory": is_dir,
             },
+            source="Filesystem observer",
+            mechanism="inotify",
         )
         self.signals.event_detected.emit(system_event)
 
@@ -75,6 +77,8 @@ class LinuxLabFileHandler(FileSystemEventHandler):
                 "path": path_str,
                 "is_directory": is_dir,
             },
+            source="Filesystem observer",
+            mechanism="inotify",
         )
         self.signals.event_detected.emit(system_event)
 
@@ -112,6 +116,8 @@ class LinuxLabFileHandler(FileSystemEventHandler):
                         "new_mode": new_oct,
                         "is_directory": is_dir,
                     },
+                    source="Filesystem observer",
+                    mechanism="stat()",
                 )
                 self.signals.event_detected.emit(system_event)
                 return
@@ -126,6 +132,8 @@ class LinuxLabFileHandler(FileSystemEventHandler):
             data={
                 "path": path_str,
             },
+            source="Filesystem observer",
+            mechanism="inotify",
         )
         self.signals.event_detected.emit(system_event)
 
@@ -150,6 +158,8 @@ class LinuxLabFileHandler(FileSystemEventHandler):
                 "new_path": new_path,
                 "is_directory": is_dir,
             },
+            source="Filesystem observer",
+            mechanism="inotify",
         )
         self.signals.event_detected.emit(system_event)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QComboBox,
+    QGridLayout,
 )
 
 from app.core.events import SystemEvent
@@ -20,7 +21,8 @@ from app.core.events import SystemEvent
 
 class EventCardWidget(QFrame):
     """
-    A rich, educational visual card representing a single Linux kernel/filesystem event.
+    A strictly factual visual card representing an observed Linux event.
+    Presents structured facts, observation source, and underlying mechanism without speculation.
     """
 
     def __init__(self, event: SystemEvent, parent=None):
@@ -32,14 +34,14 @@ class EventCardWidget(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(5)
+        layout.setSpacing(6)
 
         event_type = event.event_type
         data = event.data or {}
-        timestamp_str = event.timestamp.strftime("%H:%M:%S")
+        time_str = event.formatted_time
 
         # ----------------------------------------------------
-        # 1. HEADER ROW: Category Badge + Timestamp + PID
+        # 1. HEADER ROW: Category Badge + PID + Observed Time
         # ----------------------------------------------------
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
@@ -86,58 +88,69 @@ class EventCardWidget(QFrame):
 
         header_layout.addStretch(1)
 
-        time_lbl = QLabel(f"🕒 {timestamp_str}")
+        time_lbl = QLabel(f"🕒 {time_str}")
         time_lbl.setStyleSheet("color: #888; font-size: 11px; font-family: monospace;")
         header_layout.addWidget(time_lbl)
 
         layout.addLayout(header_layout)
 
         # ----------------------------------------------------
-        # 2. TARGET / ACTION DESCRIPTION
+        # 2. TARGET / PRIMARY DESCRIPTION
         # ----------------------------------------------------
         target_text = self._format_target_description(event_type, data)
         self.target_lbl = QLabel(target_text)
         self.target_lbl.setWordWrap(True)
-        self.target_lbl.setStyleSheet("font-size: 12px; font-weight: bold; color: #fff; padding-top: 2px;")
+        self.target_lbl.setStyleSheet("font-size: 12px; font-weight: bold; color: #f8fafc; padding-top: 1px;")
         layout.addWidget(self.target_lbl)
 
         # ----------------------------------------------------
-        # 3. EDUCATIONAL "LINUX KERNEL INSIGHT" BOX
+        # 3. OBSERVATION PROVENANCE & FACTS
         # ----------------------------------------------------
-        insight_frame = QFrame()
-        insight_frame.setStyleSheet(
+        details_frame = QFrame()
+        details_frame.setStyleSheet(
             """
             QFrame {
-                background-color: rgba(255, 255, 255, 0.04);
-                border-left: 3px solid #3498db;
-                border-radius: 3px;
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 4px;
                 padding: 4px 6px;
             }
             """
         )
-        insight_layout = QVBoxLayout(insight_frame)
-        insight_layout.setContentsMargins(4, 2, 4, 2)
-        insight_layout.setSpacing(2)
+        details_layout = QVBoxLayout(details_frame)
+        details_layout.setContentsMargins(6, 4, 6, 4)
+        details_layout.setSpacing(4)
 
-        insight_text = self._get_educational_insight(event_type, data)
-        insight_lbl = QLabel(f"💡 {insight_text}")
-        insight_lbl.setWordWrap(True)
-        insight_lbl.setStyleSheet("font-size: 11px; color: #bbb; line-height: 1.3;")
-        insight_layout.addWidget(insight_lbl)
+        # Provenance line (Source & Mechanism)
+        src_text = f"📡 <b>Source:</b> {event.source}"
+        if event.mechanism:
+            src_text += f" &nbsp;|&nbsp; <b>Mechanism:</b> <code>{event.mechanism}</code>"
 
-        layout.addWidget(insight_frame)
+        src_lbl = QLabel(src_text)
+        src_lbl.setStyleSheet("font-size: 10px; color: #94a3b8;")
+        details_layout.addWidget(src_lbl)
+
+        # Structured Facts Grid
+        facts_text = self._format_facts_summary(event_type, data)
+        if facts_text:
+            facts_lbl = QLabel(facts_text)
+            facts_lbl.setWordWrap(True)
+            facts_lbl.setStyleSheet("font-size: 11px; color: #cbd5e1; font-family: monospace;")
+            details_layout.addWidget(facts_lbl)
+
+        layout.addWidget(details_frame)
 
         # Container styling
         self.setStyleSheet(
             f"""
             EventCardWidget {{
-                background-color: rgba(35, 39, 46, 0.85);
+                background-color: rgba(30, 41, 59, 0.85);
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 6px;
             }}
             EventCardWidget:hover {{
                 border: 1px solid {badge_info["border_color"]};
-                background-color: rgba(45, 50, 60, 0.95);
+                background-color: rgba(40, 53, 75, 0.95);
             }}
             """
         )
@@ -180,8 +193,14 @@ class EventCardWidget(QFrame):
                 "text_color": "#3498db",
                 "border_color": "#2980b9",
             },
+            "file.permissions_changed": {
+                "title": "🔐 CHMOD (MODE CHANGED)",
+                "bg_color": "rgba(230, 126, 34, 0.2)",
+                "text_color": "#e67e22",
+                "border_color": "#d35400",
+            },
             "shell.cwd_changed": {
-                "title": "🐚 SHELL NAV (cd)",
+                "title": "🐚 SHELL CWD",
                 "bg_color": "rgba(155, 89, 182, 0.2)",
                 "text_color": "#9b59b6",
                 "border_color": "#8e44ad",
@@ -197,12 +216,6 @@ class EventCardWidget(QFrame):
                 "bg_color": "rgba(127, 140, 141, 0.2)",
                 "text_color": "#bdc3c7",
                 "border_color": "#7f8c8d",
-            },
-            "file.permissions_changed": {
-                "title": "🔐 CHMOD (Mode Changed)",
-                "bg_color": "rgba(230, 126, 34, 0.2)",
-                "text_color": "#e67e22",
-                "border_color": "#d35400",
             },
             "process.created": {
                 "title": "⚡ PROCESS CREATED",
@@ -227,6 +240,12 @@ class EventCardWidget(QFrame):
                 "bg_color": "rgba(155, 89, 182, 0.2)",
                 "text_color": "#9b59b6",
                 "border_color": "#8e44ad",
+            },
+            "memory.swap_usage_changed": {
+                "title": "🔄 SWAP USAGE CHANGED",
+                "bg_color": "rgba(234, 179, 8, 0.2)",
+                "text_color": "#eab308",
+                "border_color": "#ca8a04",
             },
         }
 
@@ -259,6 +278,16 @@ class EventCardWidget(QFrame):
             except Exception:
                 return f"{old_p} ➔ {new_p}"
 
+        if event_type == "file.permissions_changed":
+            path_str = data.get("path", "")
+            old_m = data.get("old_mode", "?")
+            new_m = data.get("new_mode", "?")
+            try:
+                name = Path(path_str).name
+                return f"{name}: mode {old_m} ➔ {new_m}"
+            except Exception:
+                return f"{path_str}: mode {old_m} ➔ {new_m}"
+
         if event_type == "shell.cwd_changed":
             old_cwd = data.get("old_path", "unknown")
             new_cwd = data.get("new_path", "unknown")
@@ -277,12 +306,12 @@ class EventCardWidget(QFrame):
         if event_type == "process.created":
             pid = data.get("pid", "?")
             cmd = data.get("command", "process")
-            return f"PID {pid} observed in /proc ({cmd})"
+            return f"PID {pid} observed: {cmd}"
 
         if event_type == "process.removed":
             pid = data.get("pid", "?")
             cmd = data.get("command", "process")
-            return f"PID {pid} no longer present in /proc ({cmd})"
+            return f"PID {pid} exited: {cmd}"
 
         if event_type == "process.state_changed":
             pid = data.get("pid", "?")
@@ -298,49 +327,112 @@ class EventCardWidget(QFrame):
             new_c = data.get("new_cwd", "?")
             return f"PID {pid} ({cmd}): {old_c} ➔ {new_c}"
 
+        if event_type == "memory.swap_usage_changed":
+            old_s = data.get("old_swap_used_kb", 0)
+            new_s = data.get("new_swap_used_kb", 0)
+            return f"Swap reported usage changed: {old_s:,} kB ➔ {new_s:,} kB"
+
         return str(data)
 
-    def _get_educational_insight(self, event_type: str, data: dict) -> str:
-        if event_type == "file.created":
-            return f"VFS Observation: Inode/dentry entry instantiated at {data.get('path', '')}."
-        if event_type == "directory.created":
-            return f"VFS Observation: Directory entry created at {data.get('path', '')}."
-        if event_type == "file.modified":
-            return f"VFS Observation: Content write or attribute modification reported for {data.get('path', '')}."
-        if event_type == "file.deleted":
-            return f"VFS Observation: Directory entry unlinked at {data.get('path', '')}."
-        if event_type == "directory.deleted":
-            return f"VFS Observation: Directory entry unlinked at {data.get('path', '')}."
-        if event_type == "file.moved":
-            return f"VFS Observation: Dentry rename from {data.get('old_path', '')} to {data.get('new_path', '')}."
-        if event_type == "file.permissions_changed":
-            return f"POSIX stat Observation: st_mode changed from {data.get('old_mode', '')} to {data.get('new_mode', '')}."
-        if event_type == "shell.session_created":
-            return f"/proc Observation: Shell PID {data.get('pid', '')} ({data.get('command', '')}) active on {data.get('tty', 'unknown')} with CWD {data.get('cwd', '')}."
-        if event_type == "shell.session_removed":
-            return f"/proc Observation: Shell PID {data.get('pid', '')} ({data.get('command', '')}) terminated."
-        if event_type == "shell.cwd_changed":
-            return f"/proc Observation: /proc/{data.get('pid', '')}/cwd symlink target updated to {data.get('new_path', '')}."
-        if event_type == "process.created":
-            return f"/proc Observation: PID {data.get('pid', '')} (/proc/{data.get('pid', '')}) newly observed in snapshot (command: {data.get('command', '')}, state: {data.get('state', '')})."
-        if event_type == "process.removed":
-            return f"/proc Observation: PID {data.get('pid', '')} (/proc/{data.get('pid', '')}) no longer present in snapshot (command: {data.get('command', '')})."
-        if event_type == "process.state_changed":
-            return f"/proc Observation: /proc/{data.get('pid', '')}/stat state field transitioned from {data.get('old_state', '')} to {data.get('new_state', '')}."
-        if event_type == "process.cwd_changed":
-            return f"/proc Observation: /proc/{data.get('pid', '')}/cwd symlink target updated to {data.get('new_cwd', '')}."
+    def _format_facts_summary(self, event_type: str, data: dict) -> str:
+        """Format strictly observed structured facts."""
+        facts: list[str] = []
 
-        return f"System Observation: {event_type} reported."
+        if event_type == "process.created":
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "ppid" in data:
+                facts.append(f"PPID: {data['ppid']}")
+            if "state" in data:
+                facts.append(f"STATE: {data['state']}")
+            if "command" in data:
+                facts.append(f"CMD: {data['command']}")
+            if data.get("cmdline") and data.get("cmdline") != data.get("command"):
+                facts.append(f"ARGS: {data['cmdline']}")
+            if data.get("tty"):
+                facts.append(f"TTY: {data['tty']}")
+            if data.get("cwd"):
+                facts.append(f"CWD: {data['cwd']}")
+
+        elif event_type == "process.removed":
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "ppid" in data:
+                facts.append(f"PPID: {data['ppid']}")
+            if "command" in data:
+                facts.append(f"CMD: {data['command']}")
+            if "state" in data:
+                facts.append(f"LAST_STATE: {data['state']}")
+
+        elif event_type == "process.state_changed":
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "command" in data:
+                facts.append(f"CMD: {data['command']}")
+            if "old_state" in data and "new_state" in data:
+                facts.append(f"STATE: {data['old_state']} ➔ {data['new_state']}")
+
+        elif event_type == "process.cwd_changed":
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "command" in data:
+                facts.append(f"CMD: {data['command']}")
+            if "old_cwd" in data and "new_cwd" in data:
+                facts.append(f"CWD: {data['old_cwd']} ➔ {data['new_cwd']}")
+
+        elif event_type == "file.permissions_changed":
+            if "path" in data:
+                facts.append(f"PATH: {data['path']}")
+            if "old_mode" in data and "new_mode" in data:
+                facts.append(f"MODE: {data['old_mode']} ➔ {data['new_mode']}")
+
+        elif event_type in ("file.created", "file.modified", "file.deleted", "directory.created", "directory.deleted"):
+            if "path" in data:
+                facts.append(f"PATH: {data['path']}")
+            if "is_directory" in data:
+                facts.append(f"IS_DIR: {data['is_directory']}")
+
+        elif event_type == "file.moved":
+            if "old_path" in data:
+                facts.append(f"FROM: {data['old_path']}")
+            if "new_path" in data:
+                facts.append(f"TO: {data['new_path']}")
+
+        elif event_type.startswith("shell."):
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "command" in data:
+                facts.append(f"CMD: {data['command']}")
+            if "tty" in data:
+                facts.append(f"TTY: {data['tty']}")
+            if "cwd" in data:
+                facts.append(f"CWD: {data['cwd']}")
+            if "old_path" in data and "new_path" in data:
+                facts.append(f"CWD: {data['old_path']} ➔ {data['new_path']}")
+
+        elif event_type == "memory.swap_usage_changed":
+            if "old_swap_used_kb" in data:
+                facts.append(f"OLD_SWAP: {data['old_swap_used_kb']:,} kB")
+            if "new_swap_used_kb" in data:
+                facts.append(f"NEW_SWAP: {data['new_swap_used_kb']:,} kB")
+            if "swap_total_kb" in data:
+                facts.append(f"SWAP_TOTAL: {data['swap_total_kb']:,} kB")
+
+        if not facts:
+            # Fallback to key-values for other generic events
+            return " | ".join(f"{k.upper()}: {v}" for k, v in data.items() if k not in ("observed_at", "process"))
+
+        return " | ".join(facts)
 
 
 class ActivityTimelineWidget(QWidget):
     """
-    Rich, educational Activity Timeline Widget for learners.
+    Live Activity Timeline Widget.
+    Presents a real-time chronological stream of Linux activity observed by the Lab's observers.
 
     Features:
-    - Educational card layout for every Linux event
-    - Category filtering (All, Filesystem, Shell Activity)
-    - Live Search filtering
+    - Domain-driven filtering (All, Filesystem, Process Subsystem, Shell & Terminal)
+    - Live Search filtering across facts, event types, and sources
     - Event counter and Clear functionality
     """
 
@@ -362,19 +454,19 @@ class ActivityTimelineWidget(QWidget):
         self.filter_combo = QComboBox()
         self.filter_combo.addItems([
             "🔍 All Events",
-            "📁 Filesystem Only",
-            "🐚 Shell & Terminal Only",
-            "⚡ Process Subsystem Only",
+            "📁 Filesystem (file.*, directory.*)",
+            "⚡ Process Subsystem (process.*)",
+            "🐚 Shell & Terminal (shell.*)",
+            "🧠 Memory Subsystem (memory.*)",
         ])
         self.filter_combo.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.filter_combo)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Filter path, PID, or multiple (e.g. sleep, cat, bash)...")
+        self.search_edit.setPlaceholderText("Filter by PID, command, path, source, or facts...")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(self._apply_filter)
         toolbar.addWidget(self.search_edit, 1)
-
 
         self.clear_btn = QPushButton("🗑️")
         self.clear_btn.setToolTip("Clear activity timeline")
@@ -429,7 +521,7 @@ class ActivityTimelineWidget(QWidget):
 
     def add_event(self, event: SystemEvent):
         """
-        Add a rich educational card for a newly detected Linux event.
+        Add a rich factual card for a newly observed Linux event.
         """
         card = EventCardWidget(event)
 
@@ -442,8 +534,8 @@ class ActivityTimelineWidget(QWidget):
 
         self._all_events.insert(0, (item, card))
 
-        # Maintain max capacity of 100 visual items
-        if len(self._all_events) > 100:
+        # Maintain max capacity of visual items
+        if len(self._all_events) > self.max_events:
             old_item, old_card = self._all_events.pop()
             row = self.list_widget.row(old_item)
             if row >= 0:
@@ -459,18 +551,23 @@ class ActivityTimelineWidget(QWidget):
 
         visible_count = 0
         for item, card in self._all_events:
-            event_type = card.system_event.event_type
-            data_str = str(card.system_event.data).lower()
+            event = card.system_event
+            event_type = event.event_type
+            data_str = str(event.data).lower()
             type_str = event_type.lower()
+            source_str = event.source.lower()
+            mech_str = (event.mechanism or "").lower()
 
-            # Category check
+            # Domain check
             cat_match = True
-            if filter_idx == 1:  # Filesystem Only
+            if filter_idx == 1:  # Filesystem (file.*, directory.*)
                 cat_match = event_type.startswith("file.") or event_type.startswith("directory.")
-            elif filter_idx == 2:  # Shell Only
-                cat_match = event_type.startswith("shell.")
-            elif filter_idx == 3:  # Process Only
+            elif filter_idx == 2:  # Process (process.*)
                 cat_match = event_type.startswith("process.")
+            elif filter_idx == 3:  # Shell (shell.*)
+                cat_match = event_type.startswith("shell.")
+            elif filter_idx == 4:  # Memory (memory.*)
+                cat_match = event_type.startswith("memory.")
 
             # Search query check
             query_match = True
@@ -484,12 +581,15 @@ class ActivityTimelineWidget(QWidget):
 
                 target_text = card.target_lbl.text().lower()
                 query_match = any(
-                    term in data_str or term in type_str or term in target_text
+                    term in data_str
+                    or term in type_str
+                    or term in target_text
+                    or term in source_str
+                    or term in mech_str
                     for term in terms
                 )
 
             is_visible = cat_match and query_match
-
             item.setHidden(not is_visible)
             if is_visible:
                 visible_count += 1

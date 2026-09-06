@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, QMetaObject, Qt
+from PySide6.QtCore import QMetaObject, QObject, QThread, QTimer, Qt, Signal, Slot
 
-from app.core.events import SystemEvent
-from app.process.model import Process
-from app.process.discovery import discover_all_processes
-from app.process.registry import ProcessRegistry, diff_process_snapshots
+from app.cpu.discovery import read_cpu_stat
+from app.cpu.model import CpuStatSnapshot, CpuUtilization
+from app.cpu.registry import CpuRegistry
 
 
-class ProcessWorker(QObject):
+class CpuWorker(QObject):
     """
-    Performs periodic Linux /proc sampling and state-diffing inside a dedicated QThread.
+    Performs periodic Linux /proc/stat CPU sampling in a dedicated QThread.
 
     Observation Contract:
-      - Reports transitions detectable between its observations.
-      - Does not claim to capture transitions that occurred entirely between sampling points.
-      - The worker never touches GUI widgets and communicates solely via Qt signals.
+      - The monitor samples /proc/stat cumulative time counters.
+      - Delta calculations and utilization percentages are derived across successive samples.
+      - Direct telemetry flow: high-frequency CPU samples are emitted via cpu_updated
+        and are not pushed to the Activity Timeline to prevent log spam.
+      - The worker never touches GUI widgets directly and communicates solely via Qt signals.
     """
 
-    event_detected = Signal(object)
-    processes_updated = Signal(object)
+    cpu_updated = Signal(object, object)  # (CpuUtilization | None, CpuStatSnapshot)
     error = Signal(str)
     finished = Signal()
 
@@ -34,14 +33,13 @@ class ProcessWorker(QObject):
         super().__init__(parent)
         self.interval_ms = interval_ms
         self.proc_root = proc_root
-        self.registry = ProcessRegistry()
+        self.registry = CpuRegistry()
         self.timer: QTimer | None = None
         self._running = False
-        self._has_initial_snapshot = False
 
     @Slot()
     def start(self):
-        """Start periodic /proc sampling."""
+        """Start periodic /proc/stat CPU sampling."""
         if self._running:
             return
 
@@ -51,7 +49,7 @@ class ProcessWorker(QObject):
         self.timer.setInterval(self.interval_ms)
         self.timer.timeout.connect(self.refresh)
 
-        # Initial baseline sample
+        # Initial sample to establish baseline
         self.refresh()
         self.timer.start()
 
@@ -77,47 +75,40 @@ class ProcessWorker(QObject):
 
     @Slot()
     def refresh(self):
-        """Execute one /proc sampling and state diff cycle."""
-        if not self._running and self._has_initial_snapshot:
-            return
+        """Execute one /proc/stat sampling and delta computation cycle."""
+        if not self._running:
+            # Allow single-shot manual poll if triggered explicitly
+            pass
 
         try:
-            observed_at = datetime.now()
-            raw_snapshot = discover_all_processes(self.proc_root)
-            previous_snapshot = self.registry.get_snapshot()
+            current_snap = read_cpu_stat(self.proc_root)
+            if current_snap is None:
+                self.error.emit("Required /proc/stat CPU counters missing or unreadable")
+                return
 
-            current_snapshot = self.registry.compute_cpu_utilization(
-                raw_snapshot,
-                observed_at=observed_at,
-            )
-
-            if self._has_initial_snapshot:
-                events = diff_process_snapshots(previous_snapshot, current_snapshot, observed_at=observed_at)
-                for event in events:
-                    self.event_detected.emit(event)
-            else:
-                self._has_initial_snapshot = True
-
-            self.processes_updated.emit(current_snapshot)
+            utilization = self.registry.update(current_snap)
+            self.cpu_updated.emit(utilization, current_snap)
 
         except Exception as err:
             self.error.emit(str(err))
 
+    # Alias for manual/testing triggers
+    poll_once = refresh
 
-class ProcessMonitor(QObject):
+
+class CpuMonitor(QObject):
     """
-    Clean controller for ProcessWorker running in a dedicated QThread.
+    Controller for CpuWorker running in a dedicated background QThread.
 
     Exposes:
       - start()
       - stop()
       - is_running()
-      - registry (ProcessRegistry)
-      - Signals: event_detected(SystemEvent), processes_updated(dict[int, Process]), error(str)
+      - registry (CpuRegistry)
+      - Signals: cpu_updated(CpuUtilization | None, CpuStatSnapshot), error(str)
     """
 
-    event_detected = Signal(object)
-    processes_updated = Signal(object)
+    cpu_updated = Signal(object, object)
     error = Signal(str)
 
     def __init__(
@@ -131,29 +122,28 @@ class ProcessMonitor(QObject):
         self.proc_root = proc_root
 
         self.thread = QThread()
-        self.worker = ProcessWorker(interval_ms=interval_ms, proc_root=proc_root)
+        self.worker = CpuWorker(interval_ms=interval_ms, proc_root=proc_root)
         self.worker.moveToThread(self.thread)
 
         # Thread lifecycle
         self.thread.started.connect(self.worker.start)
-        self.worker.event_detected.connect(self.event_detected)
-        self.worker.processes_updated.connect(self.processes_updated)
+        self.worker.cpu_updated.connect(self.cpu_updated)
         self.worker.error.connect(self.error)
 
         self.worker.finished.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
 
     @property
-    def registry(self) -> ProcessRegistry:
+    def registry(self) -> CpuRegistry:
         return self.worker.registry
 
     def start(self):
-        """Start the background process monitor thread."""
+        """Start background CPU monitor thread."""
         if not self.thread.isRunning():
             self.thread.start()
 
     def stop(self):
-        """Safely stop the worker in its thread and wait for clean shutdown."""
+        """Safely stop worker in its thread and wait for clean shutdown."""
         if not self.thread.isRunning():
             return
 

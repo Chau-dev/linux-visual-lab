@@ -87,6 +87,8 @@ class TerminalSessionManager:
                                 else None
                             ),
                         },
+                        source="Shell session tracker",
+                        mechanism="/proc scan",
                     )
                 )
 
@@ -123,6 +125,8 @@ class TerminalSessionManager:
                             "old_path": old_cwd,
                             "new_path": new_cwd,
                         },
+                        source="Shell session tracker",
+                        mechanism="/proc/<pid>/cwd",
                     )
                 )
 
@@ -163,6 +167,8 @@ class TerminalSessionManager:
                                 else None
                             ),
                         },
+                        source="Shell session tracker",
+                        mechanism="/proc scan",
                     )
                 )
 

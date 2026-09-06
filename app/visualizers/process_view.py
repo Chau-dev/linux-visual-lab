@@ -45,6 +45,7 @@ class ProcessTreeWidget(QTreeWidget):
     COL_STATE = 6
     COL_TTY = 7
     COL_USER = 8
+    COL_CPU = 9
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -60,6 +61,7 @@ class ProcessTreeWidget(QTreeWidget):
             "STAT",
             "TTY",
             "USER",
+            "CPU %",
         ])
         self.setAnimated(True)
         self.setAlternatingRowColors(True)
@@ -86,6 +88,7 @@ class ProcessTreeWidget(QTreeWidget):
         header.setSectionResizeMode(self.COL_STATE, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_TTY, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(self.COL_USER, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self.COL_CPU, QHeaderView.ResizeMode.Interactive)
 
         header.resizeSection(self.COL_PID, 52)
         header.resizeSection(self.COL_PPID, 52)
@@ -95,6 +98,7 @@ class ProcessTreeWidget(QTreeWidget):
         header.resizeSection(self.COL_STATE, 40)
         header.resizeSection(self.COL_TTY, 52)
         header.resizeSection(self.COL_USER, 54)
+        header.resizeSection(self.COL_CPU, 56)
 
         self.itemClicked.connect(self._handle_item_clicked)
 
@@ -211,6 +215,7 @@ class ProcessTreeWidget(QTreeWidget):
             p.state,
             tty_str,
             p.user_name,
+            p.formatted_cpu_percent,
         ])
         item.setData(self.COL_PID, Qt.ItemDataRole.UserRole, p.pid)
         self._apply_item_styles(item, p)
@@ -229,6 +234,7 @@ class ProcessTreeWidget(QTreeWidget):
         item.setText(self.COL_STATE, p.state)
         item.setText(self.COL_TTY, tty_str)
         item.setText(self.COL_USER, p.user_name)
+        item.setText(self.COL_CPU, p.formatted_cpu_percent)
 
         self._apply_item_styles(item, p)
 
@@ -254,6 +260,17 @@ class ProcessTreeWidget(QTreeWidget):
             item.setForeground(self.COL_STATE, QBrush(QColor("#f39c12")))
         else:
             item.setForeground(self.COL_STATE, QBrush(QColor("#e2e8f0")))
+
+        item.setTextAlignment(self.COL_CPU, Qt.AlignmentFlag.AlignRight)
+        if p.derived_cpu_percent is not None and p.derived_cpu_percent > 0.0:
+            if p.derived_cpu_percent >= 80.0:
+                item.setForeground(self.COL_CPU, QBrush(QColor("#ef4444")))
+            elif p.derived_cpu_percent >= 25.0:
+                item.setForeground(self.COL_CPU, QBrush(QColor("#f59e0b")))
+            else:
+                item.setForeground(self.COL_CPU, QBrush(QColor("#38bdf8")))
+        else:
+            item.setForeground(self.COL_CPU, QBrush(QColor("#94a3b8")))
 
     def _create_tree_subtree(self, node: ProcessTreeNode) -> QTreeWidgetItem:
         p = node.process
@@ -494,6 +511,25 @@ class ProcessInspectorWidget(BaseVisualizer):
         env_form.addRow("<b>Full Command Line:</b>", self.lbl_cmdline)
 
         self.content_layout.addWidget(self.env_group)
+
+        # ----------------------------------------------------
+        # 5. CPU Scheduling & Ticks Card
+        # ----------------------------------------------------
+        self.cpu_group = QGroupBox("⏱️ CPU Scheduling & Ticks (/proc/<pid>/stat)")
+        cpu_form = QFormLayout(self.cpu_group)
+        cpu_form.setSpacing(6)
+
+        self.lbl_cpu_pct = QLabel("-")
+        self.lbl_utime = QLabel("-")
+        self.lbl_stime = QLabel("-")
+        self.lbl_starttime = QLabel("-")
+
+        cpu_form.addRow("<b>Derived CPU %:</b>", self.lbl_cpu_pct)
+        cpu_form.addRow("<b>User Ticks (utime):</b>", self.lbl_utime)
+        cpu_form.addRow("<b>Kernel Ticks (stime):</b>", self.lbl_stime)
+        cpu_form.addRow("<b>Start Time (starttime):</b>", self.lbl_starttime)
+
+        self.content_layout.addWidget(self.cpu_group)
         self.content_layout.addStretch(1)
 
         scroll.setWidget(content)
@@ -516,6 +552,10 @@ class ProcessInspectorWidget(BaseVisualizer):
         self.lbl_stdin.setText("-")
         self.lbl_cwd.setText("-")
         self.lbl_cmdline.setText("-")
+        self.lbl_cpu_pct.setText("-")
+        self.lbl_utime.setText("-")
+        self.lbl_stime.setText("-")
+        self.lbl_starttime.setText("-")
 
     def render_context(self, process: Process):
         self.name_label.setText(f"⚡ {process.command}  (PID {process.pid})")
@@ -563,6 +603,19 @@ class ProcessInspectorWidget(BaseVisualizer):
 
         self.lbl_cwd.setText(str(process.cwd) if process.cwd else "Unknown / restricted")
         self.lbl_cmdline.setText(process.cmdline)
+
+        # CPU Scheduling & Ticks
+        if process.derived_cpu_percent is not None:
+            self.lbl_cpu_pct.setText(
+                f"<b style='color: #38bdf8;'>{process.derived_cpu_percent:.1f}%</b> "
+                f"<span style='color: #888;'>(wall-time ratio)</span>"
+            )
+        else:
+            self.lbl_cpu_pct.setText("<span style='color: #888;'>— (awaiting baseline)</span>")
+
+        self.lbl_utime.setText(f"<code>{process.utime_ticks:,} ticks</code>")
+        self.lbl_stime.setText(f"<code>{process.stime_ticks:,} ticks</code>")
+        self.lbl_starttime.setText(f"<code>{process.starttime:,} ticks after boot</code>")
 
 
 

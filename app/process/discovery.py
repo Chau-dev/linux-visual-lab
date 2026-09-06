@@ -137,6 +137,9 @@ def read_process_info(pid: int, proc_root: Path = Path("/proc")) -> Process | No
         sid = int(remainder[3])
         tty_nr = int(remainder[4])
         tpgid = int(remainder[5])
+        utime_ticks = int(remainder[11]) if len(remainder) > 11 else 0
+        stime_ticks = int(remainder[12]) if len(remainder) > 12 else 0
+        starttime = int(remainder[19]) if len(remainder) > 19 else 0
 
     except (FileNotFoundError, PermissionError, OSError, ValueError, IndexError, ProcessLookupError):
         return None
@@ -198,6 +201,9 @@ def read_process_info(pid: int, proc_root: Path = Path("/proc")) -> Process | No
         command=comm,
         cmdline=cmdline,
         cwd=cwd,
+        utime_ticks=utime_ticks,
+        stime_ticks=stime_ticks,
+        starttime=starttime,
     )
 
 

@@ -25,9 +25,13 @@ from app.process.focused_session import FocusedSession
 from app.process.session_thread import TerminalSessionThread
 from app.process.monitor import ProcessMonitor
 from app.monitors.filesystem import FileSystemMonitor
+from app.memory.monitor import MemoryMonitor
+from app.cpu.monitor import CpuMonitor
 from app.visualizers.session_panel import TerminalSessionWidget
 from app.visualizers.filesystem_view import FilesystemTreeWidget, SelectedObjectInspectorWidget
 from app.visualizers.process_view import ProcessLabWidget
+from app.visualizers.memory_view import MemoryLabWidget
+from app.visualizers.cpu_view import CpuLabWidget
 from app.visualizers.activity_timeline import ActivityTimelineWidget
 from app.ui.panels import ContextPanel
 
@@ -96,6 +100,8 @@ class MainWindow(QMainWindow):
         self.session_thread = TerminalSessionThread(interval_ms=500)
         self.process_monitor = ProcessMonitor(interval_ms=self.process_interval_ms)
         self.fs_monitor = FileSystemMonitor(self.lab_path, event_bus=self.event_bus)
+        self.memory_monitor = MemoryMonitor(interval_ms=1000)
+        self.cpu_monitor = CpuMonitor(interval_ms=500)
 
     # ========================================================
     # 3. Create Visualizers
@@ -111,6 +117,8 @@ class MainWindow(QMainWindow):
         # Center panel components
         self.inspector_widget = SelectedObjectInspectorWidget()
         self.process_lab = ProcessLabWidget()
+        self.memory_lab = MemoryLabWidget()
+        self.cpu_lab = CpuLabWidget()
 
         # Right panel component
         self.timeline_widget = ActivityTimelineWidget()
@@ -128,6 +136,15 @@ class MainWindow(QMainWindow):
         self.process_monitor.event_detected.connect(self.event_bus.publish)
         self.process_monitor.processes_updated.connect(self.handle_processes_updated)
         self.process_monitor.error.connect(self.handle_process_error)
+
+        # Forward memory monitor signals
+        self.memory_monitor.memory_updated.connect(self.memory_lab.update_memory)
+        self.memory_monitor.event_detected.connect(self.event_bus.publish)
+        self.memory_monitor.error.connect(self.handle_memory_error)
+
+        # Forward CPU monitor signals
+        self.cpu_monitor.cpu_updated.connect(self.cpu_lab.update_cpu)
+        self.cpu_monitor.error.connect(self.handle_cpu_error)
 
         # Filesystem Monitor signals (GUI thread)
         self.fs_monitor.signals.created.connect(self.handle_fs_change)
@@ -159,6 +176,7 @@ class MainWindow(QMainWindow):
             "process.removed",
             "process.state_changed",
             "process.cwd_changed",
+            "memory.swap_usage_changed",
         ]
         for event_type in system_events:
             self.event_bus.subscribe(event_type, self.handle_bus_event)
@@ -203,7 +221,7 @@ class MainWindow(QMainWindow):
 
         workspace.addWidget(left_panel)
 
-        # Center Panel (Tabbed: POSIX Permissions Lab + Linux Process Lab)
+        # Center Panel (Tabbed Labs)
         center_panel = QWidget()
         center_layout = QVBoxLayout(center_panel)
         center_layout.setContentsMargins(4, 0, 4, 0)
@@ -212,6 +230,8 @@ class MainWindow(QMainWindow):
         self.center_tabs = QTabWidget()
         self.center_tabs.addTab(self.inspector_widget, "🔬 POSIX Filesystem Lab")
         self.center_tabs.addTab(self.process_lab, "⚡ Linux Process Lab")
+        self.center_tabs.addTab(self.memory_lab, "🧠 Linux Memory Lab")
+        self.center_tabs.addTab(self.cpu_lab, "🔥 Linux CPU Lab")
 
         center_layout.addWidget(self.center_tabs, 1)
         workspace.addWidget(center_panel)
@@ -239,7 +259,6 @@ class MainWindow(QMainWindow):
         workspace.setStretchFactor(1, 4)
         workspace.setStretchFactor(2, 2)
 
-
     # ========================================================
     # 6. Start Observers
     # ========================================================
@@ -248,6 +267,8 @@ class MainWindow(QMainWindow):
         self.fs_monitor.start()
         self.session_thread.start()
         self.process_monitor.start()
+        self.memory_monitor.start()
+        self.cpu_monitor.start()
 
     # ========================================================
     # Event & State Handlers
@@ -393,6 +414,12 @@ class MainWindow(QMainWindow):
     def handle_process_error(self, err_msg: str):
         print(f"[ProcessWorker Error] {err_msg}")
 
+    def handle_memory_error(self, err_msg: str):
+        print(f"[MemoryWorker Error] {err_msg}")
+
+    def handle_cpu_error(self, err_msg: str):
+        print(f"[CpuWorker Error] {err_msg}")
+
     # ========================================================
     # 7. Safe Application Shutdown
     # ========================================================
@@ -408,5 +435,11 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "process_monitor"):
             self.process_monitor.stop()
+
+        if hasattr(self, "memory_monitor"):
+            self.memory_monitor.stop()
+
+        if hasattr(self, "cpu_monitor"):
+            self.cpu_monitor.stop()
 
         event.accept()

@@ -34,6 +34,10 @@ class Process:
     command: str = ""        # comm or executable basename
     cmdline: str = ""        # Full argument string from /proc/<pid>/cmdline
     cwd: Path | None = None  # Resolved target of /proc/<pid>/cwd
+    utime_ticks: int = 0     # /proc/<pid>/stat field 14 (user CPU time in ticks)
+    stime_ticks: int = 0     # /proc/<pid>/stat field 15 (kernel CPU time in ticks)
+    starttime: int = 0       # /proc/<pid>/stat field 22 (start time after boot in ticks)
+    derived_cpu_percent: float | None = None  # Derived wall-time CPU percentage
 
     @property
     def state_description(self) -> str:
@@ -84,3 +88,16 @@ class Process:
     def is_foreground(self) -> bool:
         """Linux kernel definition: Process Group ID equals TTY Foreground PGID (TPGID)."""
         return self.tpgid > 0 and self.pgid == self.tpgid
+
+    @property
+    def total_cpu_ticks(self) -> int:
+        """Sum of user (utime) and kernel (stime) CPU time in clock ticks."""
+        return self.utime_ticks + self.stime_ticks
+
+    @property
+    def formatted_cpu_percent(self) -> str:
+        """Derived formatted CPU percentage string."""
+        if self.derived_cpu_percent is None:
+            return "—"
+        return f"{self.derived_cpu_percent:.1f}%"
+
