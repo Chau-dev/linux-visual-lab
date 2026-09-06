@@ -23,11 +23,12 @@ class TestProcessIntegration(unittest.TestCase):
         window = MainWindow(process_interval_ms=100)
 
         # Tab check
-        self.assertEqual(window.center_tabs.count(), 4)
+        self.assertEqual(window.center_tabs.count(), 5)
         self.assertEqual(window.center_tabs.tabText(0), "🔬 POSIX Filesystem Lab")
         self.assertEqual(window.center_tabs.tabText(1), "⚡ Linux Process Lab")
-        self.assertEqual(window.center_tabs.tabText(2), "🧠 Linux Memory Lab")
-        self.assertEqual(window.center_tabs.tabText(3), "🔥 Linux CPU Lab")
+        self.assertEqual(window.center_tabs.tabText(2), "🗂️ Linux File Descriptors & I/O Lab")
+        self.assertEqual(window.center_tabs.tabText(3), "🧠 Linux Memory Lab")
+        self.assertEqual(window.center_tabs.tabText(4), "🔥 Linux CPU Lab")
 
         # Simulate process snapshot update
         p1 = Process(
@@ -57,6 +58,7 @@ class TestProcessIntegration(unittest.TestCase):
         window.process_monitor.stop()
         window.memory_monitor.stop()
         window.cpu_monitor.stop()
+        window.io_monitor.stop()
         window.fs_monitor.stop()
         window.close()
 

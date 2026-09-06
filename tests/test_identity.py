@@ -29,6 +29,13 @@ class TestIdentityHighlighting(unittest.TestCase):
         self.assertIn("UID 1000", badge)
         self.assertIn("border-radius", badge)
 
+    def test_palette_variety_and_dispersion(self):
+        # Verify consecutive IDs map to distinct color tokens
+        styles = [get_identity_style(i) for i in range(100, 110)]
+        unique_styles = set(styles)
+        # Should have high variety across consecutive IDs
+        self.assertGreater(len(unique_styles), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

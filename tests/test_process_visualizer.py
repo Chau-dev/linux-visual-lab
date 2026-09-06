@@ -228,6 +228,93 @@ class TestProcessVisualizer(unittest.TestCase):
         lab.toggle_inspector_btn.setChecked(True)
         self.assertFalse(lab.inspector_widget.isHidden())
 
+    def test_pause_live_updates(self):
+        """Verify pausing updates freezes the tree so the learner can inspect without table changing."""
+        lab = ProcessLabWidget()
+        procs1 = {21375: self.p_bash}
+        lab.update_processes(procs1)
+        self.assertEqual(lab.tree_widget.topLevelItemCount(), 1)
+
+        # Pause updates
+        lab.pause_btn.setChecked(True)
+        self.assertTrue(lab.is_paused)
+        self.assertIn("Resume", lab.pause_btn.text())
+
+        # Incoming snapshot with new sleep process
+        procs2 = {21375: self.p_bash, 21400: self.p_sleep}
+        lab.update_processes(procs2)
+
+        # Tree should remain frozen with only 1 process
+        root = lab.tree_widget.topLevelItem(0)
+        self.assertEqual(root.childCount(), 0)
+
+        # Unpause / Resume
+        lab.pause_btn.setChecked(False)
+        self.assertFalse(lab.is_paused)
+        self.assertIn("Pause", lab.pause_btn.text())
+
+        # Now tree reflects updated snapshot
+        root = lab.tree_widget.topLevelItem(0)
+        self.assertEqual(root.childCount(), 1)
+
+    def test_filter_presets(self):
+        """Verify quick category filter presets in Process Lab."""
+        lab = ProcessLabWidget()
+        import os
+        my_uid = os.getuid()
+
+        p_shell = Process(pid=1000, ppid=1, pgid=1000, sid=1000, tpgid=1000, uid=my_uid, gid=1000, tty="/dev/pts/1", tty_nr=34817, command="bash")
+        p_child = Process(pid=2000, ppid=1000, pgid=2000, sid=1000, tpgid=1000, uid=my_uid, gid=1000, tty="/dev/pts/1", tty_nr=34817, command="sleep", state="S")
+        p_daemon = Process(pid=3000, ppid=1, pgid=3000, sid=3000, tpgid=0, uid=0, gid=0, tty=None, tty_nr=0, command="systemd-udevd", state="S")
+        p_active = Process(pid=4000, ppid=1, pgid=4000, sid=4000, tpgid=0, uid=my_uid, gid=1000, tty=None, tty_nr=0, command="worker", state="R", derived_cpu_percent=15.0)
+
+        procs = {1000: p_shell, 2000: p_child, 3000: p_daemon, 4000: p_active}
+        lab.update_processes(procs, focused_pid=1000)
+
+        # 1. Preset 'shell_tree' -> only shell 1000 and child 2000 visible
+        lab.preset_combo.setCurrentIndex(1)  # shell_tree
+        self.assertFalse(lab.tree_widget._tree_items[1000].isHidden())
+        self.assertFalse(lab.tree_widget._tree_items[2000].isHidden())
+        self.assertTrue(lab.tree_widget._tree_items[3000].isHidden())
+        self.assertTrue(lab.tree_widget._tree_items[4000].isHidden())
+
+        # 2. Preset 'user' -> root daemon 3000 hidden
+        lab.preset_combo.setCurrentIndex(2)  # user
+        self.assertFalse(lab.tree_widget._tree_items[1000].isHidden())
+        self.assertFalse(lab.tree_widget._tree_items[2000].isHidden())
+        self.assertTrue(lab.tree_widget._tree_items[3000].isHidden())
+        self.assertFalse(lab.tree_widget._tree_items[4000].isHidden())
+
+        # 3. Preset 'active' -> only active worker 4000 visible
+        lab.preset_combo.setCurrentIndex(3)  # active
+        self.assertFalse(lab.tree_widget._tree_items[4000].isHidden())
+        self.assertTrue(lab.tree_widget._tree_items[3000].isHidden())
+
+    def test_selection_pinning_and_io_jump(self):
+        """Verify process pinning and direct jump to I/O lab."""
+        lab = ProcessLabWidget()
+        procs = {21375: self.p_bash, 21400: self.p_sleep}
+        lab.update_processes(procs)
+
+        # Select sleep process
+        lab.tree_widget.select_pid(21400)
+        self.assertEqual(lab.inspector_widget._current_process.pid, 21400)
+
+        # Pin selection
+        lab.pin_btn.setChecked(True)
+        self.assertTrue(lab._is_pinned)
+        self.assertEqual(lab._pinned_pid, 21400)
+
+        # Background update with changed focus should not unselect pinned process
+        lab.update_processes(procs, focused_pid=21375)
+        self.assertEqual(lab.tree_widget._selected_pid, 21400)
+
+        # Jump to I/O lab
+        requested_pids = []
+        lab.inspect_io_requested.connect(lambda pid: requested_pids.append(pid))
+
+        lab.inspector_widget.inspect_io_btn.click()
+        self.assertEqual(requested_pids, [21400])
 
 
 if __name__ == "__main__":

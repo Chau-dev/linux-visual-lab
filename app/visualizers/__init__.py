@@ -5,6 +5,7 @@ from app.visualizers.filesystem_view import FilesystemTreeWidget, SelectedObject
 from app.visualizers.process_view import ProcessLabWidget
 from app.visualizers.memory_view import MemoryLabWidget
 from app.visualizers.cpu_view import CpuLabWidget
+from app.visualizers.io_view import IoLabWidget
 
 __all__ = [
     "BaseVisualizer",
@@ -15,4 +16,5 @@ __all__ = [
     "ProcessLabWidget",
     "MemoryLabWidget",
     "CpuLabWidget",
+    "IoLabWidget",
 ]

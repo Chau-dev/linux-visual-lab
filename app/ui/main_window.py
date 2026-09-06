@@ -27,11 +27,13 @@ from app.process.monitor import ProcessMonitor
 from app.monitors.filesystem import FileSystemMonitor
 from app.memory.monitor import MemoryMonitor
 from app.cpu.monitor import CpuMonitor
+from app.io.monitor import IoMonitor
 from app.visualizers.session_panel import TerminalSessionWidget
 from app.visualizers.filesystem_view import FilesystemTreeWidget, SelectedObjectInspectorWidget
 from app.visualizers.process_view import ProcessLabWidget
 from app.visualizers.memory_view import MemoryLabWidget
 from app.visualizers.cpu_view import CpuLabWidget
+from app.visualizers.io_view import IoLabWidget
 from app.visualizers.activity_timeline import ActivityTimelineWidget
 from app.ui.panels import ContextPanel
 
@@ -62,8 +64,8 @@ class MainWindow(QMainWindow):
 
     Thin coordinator that wires together:
       - Core (EventBus, ActivityTimeline, FocusedSession)
-      - Observers & State Managers (FileSystemMonitor, TerminalSessionThread, ProcessMonitor)
-      - Visualizers (ContextPanel, TerminalSessionWidget, FilesystemTreeWidget, SelectedObjectInspectorWidget, ProcessLabWidget, Timeline)
+      - Observers & State Managers (FileSystemMonitor, TerminalSessionThread, ProcessMonitor, MemoryMonitor, CpuMonitor, IoMonitor)
+      - Visualizers (ContextPanel, TerminalSessionWidget, FilesystemTreeWidget, SelectedObjectInspectorWidget, ProcessLabWidget, MemoryLabWidget, CpuLabWidget, IoLabWidget, Timeline)
     """
 
     def __init__(self, lab_path: Path | None = None, process_interval_ms: int = 500):
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self.fs_monitor = FileSystemMonitor(self.lab_path, event_bus=self.event_bus)
         self.memory_monitor = MemoryMonitor(interval_ms=1000)
         self.cpu_monitor = CpuMonitor(interval_ms=500)
+        self.io_monitor = IoMonitor(interval_ms=500)
 
     # ========================================================
     # 3. Create Visualizers
@@ -119,6 +122,7 @@ class MainWindow(QMainWindow):
         self.process_lab = ProcessLabWidget()
         self.memory_lab = MemoryLabWidget()
         self.cpu_lab = CpuLabWidget()
+        self.io_lab = IoLabWidget()
 
         # Right panel component
         self.timeline_widget = ActivityTimelineWidget()
@@ -146,6 +150,13 @@ class MainWindow(QMainWindow):
         self.cpu_monitor.cpu_updated.connect(self.cpu_lab.update_cpu)
         self.cpu_monitor.error.connect(self.handle_cpu_error)
 
+        # Forward I/O monitor signals
+        self.io_monitor.io_updated.connect(self.io_lab.update_io_state)
+        self.io_monitor.diskstats_updated.connect(self.io_lab.update_diskstats)
+        self.io_monitor.locks_updated.connect(self.io_lab.update_locks)
+        self.io_monitor.event_detected.connect(self.event_bus.publish)
+        self.io_monitor.error.connect(self.handle_io_error)
+
         # Filesystem Monitor signals (GUI thread)
         self.fs_monitor.signals.created.connect(self.handle_fs_change)
         self.fs_monitor.signals.deleted.connect(self.handle_fs_deleted)
@@ -158,6 +169,14 @@ class MainWindow(QMainWindow):
 
         # Session selection -> Focused session update
         self.session_widget.session_selected.connect(self.handle_session_selected)
+
+        # Process tree selection -> Update Process Inspector & FD / IO Lab target
+        self.process_lab.tree_widget.process_selected.connect(self.handle_process_selected)
+        self.process_lab.inspect_io_requested.connect(self.handle_inspect_io_requested)
+
+        # IO Lab process picker / pin selection -> Synchronize Process Lab & IO Monitor
+        self.io_lab.process_chosen.connect(self.handle_io_process_chosen)
+        self.io_lab.follow_mode_requested.connect(self.handle_io_follow_mode_requested)
 
         # EventBus subscriptions -> Activity Timeline
         system_events = [
@@ -177,6 +196,9 @@ class MainWindow(QMainWindow):
             "process.state_changed",
             "process.cwd_changed",
             "memory.swap_usage_changed",
+            "io.fd_appeared",
+            "io.fd_disappeared",
+            "io.pipe_shared",
         ]
         for event_type in system_events:
             self.event_bus.subscribe(event_type, self.handle_bus_event)
@@ -230,6 +252,7 @@ class MainWindow(QMainWindow):
         self.center_tabs = QTabWidget()
         self.center_tabs.addTab(self.inspector_widget, "🔬 POSIX Filesystem Lab")
         self.center_tabs.addTab(self.process_lab, "⚡ Linux Process Lab")
+        self.center_tabs.addTab(self.io_lab, "🗂️ Linux File Descriptors & I/O Lab")
         self.center_tabs.addTab(self.memory_lab, "🧠 Linux Memory Lab")
         self.center_tabs.addTab(self.cpu_lab, "🔥 Linux CPU Lab")
 
@@ -269,6 +292,7 @@ class MainWindow(QMainWindow):
         self.process_monitor.start()
         self.memory_monitor.start()
         self.cpu_monitor.start()
+        self.io_monitor.start()
 
     # ========================================================
     # Event & State Handlers
@@ -288,8 +312,24 @@ class MainWindow(QMainWindow):
         self._update_focused_location()
 
     def handle_processes_updated(self, processes: dict[int, Process]):
-        """Update live process table/tree and inspector with active terminal branch auto-expanded."""
+        """
+        Update live process table/tree and forward authoritative process snapshot
+        to the IO Lab picker (single source of process truth).
+        """
         self.process_lab.update_processes(processes, focused_pid=self.focused_session.pid)
+        self.io_lab.update_process_list(processes, focused_pid=self.focused_session.pid)
+
+        # Synchronize IoMonitor sampling target
+        if self.io_lab.is_pinned:
+            pinned_pid = self.io_lab.pinned_pid
+            if pinned_pid and pinned_pid in processes:
+                self.io_monitor.set_target_pid(pinned_pid)
+            else:
+                self.io_monitor.set_target_pid(None)
+        else:
+            focused_pid = self.focused_session.pid
+            if focused_pid and focused_pid in processes:
+                self.io_monitor.set_target_pid(focused_pid)
 
     def _ensure_focused_session(self):
         """Ensure focused PID is valid; select first if not set or exited."""
@@ -299,6 +339,9 @@ class MainWindow(QMainWindow):
                 self.session_widget.current_pid = None
                 self.session_widget.update_focus_markers()
                 self.process_lab.set_focused_pid(None)
+                if not self.io_lab.is_pinned:
+                    self.io_monitor.set_target_pid(None)
+                    self.io_lab.set_target_process(None)
             self.context_panel.show_unknown()
             self.tree_widget.highlight_current_directory(None)
             return
@@ -312,6 +355,9 @@ class MainWindow(QMainWindow):
         self.session_widget.current_pid = first_session.pid
         self.session_widget.update_focus_markers()
         self.process_lab.set_focused_pid(first_session.pid)
+        if not self.io_lab.is_pinned:
+            self.io_monitor.set_target_pid(first_session.pid)
+            self.io_lab.select_pid(first_session.pid, first_session.command)
 
     def _update_focused_location(self):
         pid = self.focused_session.pid
@@ -340,6 +386,64 @@ class MainWindow(QMainWindow):
         self.context_panel.set_location(session.cwd)
         self.tree_widget.highlight_current_directory(session.cwd)
         self.process_lab.set_focused_pid(pid)
+
+        # Only redirect IO Lab if not pinned to another process
+        if not self.io_lab.is_pinned:
+            if self.io_lab.current_pid != pid:
+                self.io_monitor.set_target_pid(pid)
+                self.io_lab.select_pid(pid, session.command)
+
+    def handle_process_selected(self, process: Process | None):
+        """
+        Idempotent selection handler when a process is selected in Process Lab.
+        Prevents recursive event loops by checking current_pid before invoking IO lab.
+        """
+        if process is not None:
+            pid = process.pid
+            if self.io_lab.current_pid != pid:
+                self.io_monitor.set_target_pid(pid)
+                self.io_lab.select_pid(pid, process.command)
+        else:
+            if not self.io_lab.is_pinned:
+                pid = self.focused_session.pid
+                session = self.session_snapshot.get(pid) if pid else None
+                if self.io_lab.current_pid != pid:
+                    self.io_monitor.set_target_pid(pid)
+                    self.io_lab.select_pid(pid, session.command if session else "")
+
+    def handle_io_process_chosen(self, pid: int | None):
+        """
+        Idempotent selection handler when a process is chosen / pinned in IO Lab.
+        Synchronizes IO Monitor target and Process Lab selection without recursion.
+        """
+        if pid is not None:
+            self.io_monitor.set_target_pid(pid)
+            if self.io_lab.current_pid != pid:
+                p = self.process_lab.tree_widget._current_processes.get(pid)
+                self.io_lab.select_pid(pid, p.command if p else "")
+            if self.process_lab.tree_widget._selected_pid != pid:
+                self.process_lab.tree_widget.select_pid(pid)
+        else:
+            self.io_monitor.set_target_pid(None)
+
+    def handle_io_follow_mode_requested(self):
+        """
+        Switch IO Lab back to following focused terminal session.
+        """
+        focused_pid = self.focused_session.pid
+        session = self.session_snapshot.get(focused_pid) if focused_pid else None
+        self.io_monitor.set_target_pid(focused_pid)
+        self.io_lab.select_pid(focused_pid, session.command if session else "")
+        if focused_pid and self.process_lab.tree_widget._selected_pid != focused_pid:
+            self.process_lab.tree_widget.select_pid(focused_pid)
+
+    def handle_inspect_io_requested(self, pid: int):
+        """
+        Direct action handler to jump to Linux File Descriptors & I/O Lab with target PID pinned.
+        """
+        self.center_tabs.setCurrentWidget(self.io_lab)
+        self.io_lab.pin_pid(pid)
+        self.io_monitor.set_target_pid(pid)
 
     def handle_shell_cwd_changed(self, event: SystemEvent):
         pid = event.data.get("pid")
@@ -420,6 +524,9 @@ class MainWindow(QMainWindow):
     def handle_cpu_error(self, err_msg: str):
         print(f"[CpuWorker Error] {err_msg}")
 
+    def handle_io_error(self, err_msg: str):
+        print(f"[IoWorker Error] {err_msg}")
+
     # ========================================================
     # 7. Safe Application Shutdown
     # ========================================================
@@ -441,5 +548,8 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "cpu_monitor"):
             self.cpu_monitor.stop()
+
+        if hasattr(self, "io_monitor"):
+            self.io_monitor.stop()
 
         event.accept()

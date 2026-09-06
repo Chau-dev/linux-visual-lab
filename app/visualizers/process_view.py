@@ -1,24 +1,27 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QLabel,
-    QTreeWidget,
-    QTreeWidgetItem,
+    QComboBox,
     QFrame,
-    QScrollArea,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
     QLineEdit,
     QPushButton,
-    QGroupBox,
+    QScrollArea,
     QSplitter,
-    QHeaderView,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from app.process.model import Process
@@ -34,7 +37,8 @@ class ProcessTreeWidget(QTreeWidget):
     Automatically expands the branch containing the focused terminal session.
     """
 
-    process_selected = Signal(object)  # Emits Process instance
+    process_selected = Signal(object)  # Emits Process instance on selection
+    process_double_clicked = Signal(object)  # Emits Process instance on double-click
 
     COL_COMMAND = 0
     COL_PID = 1
@@ -101,13 +105,14 @@ class ProcessTreeWidget(QTreeWidget):
         header.resizeSection(self.COL_CPU, 56)
 
         self.itemClicked.connect(self._handle_item_clicked)
-
+        self.itemDoubleClicked.connect(self._handle_item_double_clicked)
 
         self._current_processes: dict[int, Process] = {}
         self._tree_items: dict[int, QTreeWidgetItem] = {}
         self._selected_pid: int | None = None
         self._focused_pid: int | None = None
         self._filter_query: str = ""
+        self._filter_preset: str = "all"
 
     def set_focused_pid(self, pid: int | None):
         """Set the active focused shell PID and auto-expand its branch."""
@@ -121,11 +126,17 @@ class ProcessTreeWidget(QTreeWidget):
             self._selected_pid = pid
             self.process_selected.emit(self._current_processes[pid])
 
+    def _handle_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        pid = item.data(self.COL_PID, Qt.ItemDataRole.UserRole)
+        if pid and pid in self._current_processes:
+            self._selected_pid = pid
+            self.process_double_clicked.emit(self._current_processes[pid])
+
     def update_processes(self, processes: dict[int, Process], focused_pid: int | None = None):
         """
         Incrementally update the tree hierarchy with the latest /proc process snapshot.
         Preserves user expand/collapse states (including Expand All and Collapse All),
-        updates attributes in-place, and auto-expands the active terminal when newly selected.
+        updates attributes in-place, and preserves scroll position.
         """
         self._current_processes = dict(processes)
         focused_pid_changed = (focused_pid is not None and focused_pid != self._focused_pid)
@@ -134,6 +145,8 @@ class ProcessTreeWidget(QTreeWidget):
 
         current_pids = set(processes.keys())
         existing_pids = set(self._tree_items.keys())
+
+        v_scroll = self.verticalScrollBar().value()
 
         # If first run: build initial hierarchy
         if not self._tree_items:
@@ -149,8 +162,8 @@ class ProcessTreeWidget(QTreeWidget):
                 if first_pid:
                     self.select_pid(first_pid)
 
-            if self._filter_query:
-                self.apply_filter(self._filter_query)
+            if self._filter_query or self._filter_preset != "all":
+                self.apply_filter(self._filter_query, self._filter_preset)
             return
 
         # 1. Remove exited processes
@@ -177,7 +190,6 @@ class ProcessTreeWidget(QTreeWidget):
                 parent_item = self._tree_items.get(p.ppid)
                 if parent_item is not None:
                     parent_item.addChild(item)
-                    # If this is a new child of the focused shell, expand the shell so it is immediately visible
                     if p.ppid == self._focused_pid:
                         parent_item.setExpanded(True)
                 else:
@@ -199,8 +211,10 @@ class ProcessTreeWidget(QTreeWidget):
             if self.currentItem() != item:
                 self.setCurrentItem(item)
 
-        if self._filter_query:
-            self.apply_filter(self._filter_query)
+        if self._filter_query or self._filter_preset != "all":
+            self.apply_filter(self._filter_query, self._filter_preset)
+
+        self.verticalScrollBar().setValue(v_scroll)
 
     def _create_single_item(self, p: Process) -> QTreeWidgetItem:
         tty_str = p.tty.replace("/dev/", "") if p.tty else "?"
@@ -286,7 +300,6 @@ class ProcessTreeWidget(QTreeWidget):
 
         return item
 
-
     def expand_to_pid(self, target_pid: int) -> bool:
         """Expand the ancestor chain leading down to target_pid, and expand target_pid itself."""
         root = self.invisibleRootItem()
@@ -307,35 +320,72 @@ class ProcessTreeWidget(QTreeWidget):
                 return True
         return False
 
-    def apply_filter(self, query: str):
+    def apply_filter(self, query: str | None = None, preset: str | None = None):
         """
-        Filter tree items by multiple terms simultaneously (comma, pipe, or space separated),
-        e.g., 'sleep, cat, bash' or 'sleep | cat | 10228' or 'sleep cat'.
-        Matches any of the specified terms and auto-expands the hierarchy to all matching nodes.
+        Filter tree items by multiple terms simultaneously and/or category preset.
+        Supports quick presets:
+          - 'all': All processes
+          - 'shell_tree': Active terminal shell + ancestor path and all its spawned child processes
+          - 'user': Current user UID processes
+          - 'active': Non-idle / active processes
+          - 'session_leaders': Session leader processes
         """
-        self._filter_query = query.strip()
-        root = self.invisibleRootItem()
+        if query is not None:
+            self._filter_query = query.strip()
+        if preset is not None:
+            self._filter_preset = preset.strip()
 
-        if not self._filter_query:
-            # No filter: show all items
-            def _show_all(item: QTreeWidgetItem):
-                item.setHidden(False)
-                for i in range(item.childCount()):
-                    _show_all(item.child(i))
-
-            for i in range(root.childCount()):
-                _show_all(root.child(i))
-            return
-
-        # Parse terms: support commas ',', pipes '|', or multiple space-separated words
         raw_query = self._filter_query.lower()
-        if "," in raw_query or "|" in raw_query:
-            terms = [t.strip() for t in re.split(r"[,|]", raw_query) if t.strip()]
-        else:
-            tokens = [t.strip() for t in raw_query.split() if t.strip()]
-            terms = list(dict.fromkeys([raw_query] + tokens))
+        preset = self._filter_preset
 
-        def _matches_process(p: Process) -> bool:
+        # Compute shell tree allowed PIDs if preset == "shell_tree"
+        shell_tree_pids = set()
+        if preset == "shell_tree" and self._focused_pid and self._focused_pid in self._current_processes:
+            shell_tree_pids.add(self._focused_pid)
+            # Ancestors
+            curr = self._current_processes.get(self._focused_pid)
+            while curr and curr.ppid in self._current_processes and curr.ppid != curr.pid and curr.ppid != 0:
+                shell_tree_pids.add(curr.ppid)
+                curr = self._current_processes.get(curr.ppid)
+            # Descendants
+            desc_pids = {self._focused_pid}
+            while True:
+                new_desc = {
+                    p.pid
+                    for p in self._current_processes.values()
+                    if p.ppid in desc_pids and p.pid not in desc_pids
+                }
+                if not new_desc:
+                    break
+                desc_pids |= new_desc
+            shell_tree_pids |= desc_pids
+
+        # Parse terms
+        if raw_query:
+            if "," in raw_query or "|" in raw_query:
+                terms = [t.strip() for t in re.split(r"[,|]", raw_query) if t.strip()]
+            else:
+                tokens = [t.strip() for t in raw_query.split() if t.strip()]
+                terms = list(dict.fromkeys([raw_query] + tokens))
+        else:
+            terms = []
+
+        def _matches_preset(p: Process) -> bool:
+            if preset == "all":
+                return True
+            elif preset == "shell_tree":
+                return p.pid in shell_tree_pids
+            elif preset == "user":
+                return p.uid == os.getuid()
+            elif preset == "active":
+                return p.state == "R" or (p.derived_cpu_percent is not None and p.derived_cpu_percent > 0.0)
+            elif preset == "session_leaders":
+                return p.is_session_leader
+            return True
+
+        def _matches_query(p: Process) -> bool:
+            if not terms:
+                return True
             p_pid_str = str(p.pid)
             p_ppid_str = str(p.ppid)
             p_pgid_str = str(p.pgid)
@@ -366,38 +416,41 @@ class ProcessTreeWidget(QTreeWidget):
                     return True
             return False
 
+        root = self.invisibleRootItem()
+
         def _filter_node(item: QTreeWidgetItem) -> bool:
             pid = item.data(self.COL_PID, Qt.ItemDataRole.UserRole)
             p = self._current_processes.get(pid) if pid else None
 
-            matches = _matches_process(p) if p else False
+            self_matches = (_matches_preset(p) and _matches_query(p)) if p else False
 
             child_matches = False
             for i in range(item.childCount()):
                 if _filter_node(item.child(i)):
                     child_matches = True
 
-            visible = matches or child_matches
+            visible = self_matches or child_matches
             item.setHidden(not visible)
-            if child_matches or (matches and terms):
+            if child_matches or (self_matches and (terms or preset != "all")):
                 item.setExpanded(True)
             return visible
 
         for i in range(root.childCount()):
             _filter_node(root.child(i))
 
-
     def select_pid(self, pid: int) -> bool:
-        """Programmatically select a process row by PID and emit inspection signal."""
+        """Programmatically select a process row by PID, auto-center in view, and emit inspection signal."""
         item = self._tree_items.get(pid)
         if item is not None:
             self.setCurrentItem(item)
+            self.scrollToItem(item, QTreeWidget.ScrollHint.PositionAtCenter)
+            if self._selected_pid == pid:
+                return True
             self._selected_pid = pid
             if pid in self._current_processes:
                 self.process_selected.emit(self._current_processes[pid])
             return True
         return False
-
 
 
 class ProcessInspectorWidget(BaseVisualizer):
@@ -411,10 +464,14 @@ class ProcessInspectorWidget(BaseVisualizer):
       - Credentials (UID / GID)
       - Controlling Terminal (tty_nr from stat) vs Standard Input (fd 0)
       - Working Directory (CWD)
+      - Quick jump to Linux File Descriptors & I/O Lab
     """
+
+    inspect_io_requested = Signal(int)  # Emits PID when user clicks Inspect in I/O Lab
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._current_process: Process | None = None
         self._init_ui()
 
     def _init_ui(self):
@@ -513,7 +570,50 @@ class ProcessInspectorWidget(BaseVisualizer):
         self.content_layout.addWidget(self.env_group)
 
         # ----------------------------------------------------
-        # 5. CPU Scheduling & Ticks Card
+        # 5. File Descriptors & Streams Card
+        # ----------------------------------------------------
+        self.fd_group = QGroupBox("🗂️ File Descriptors & Streams (/proc/<pid>/fd)")
+        fd_form = QFormLayout(self.fd_group)
+        fd_form.setSpacing(6)
+
+        self.lbl_fd_stdin = QLabel("-")
+        self.lbl_fd_hint = QLabel(
+            "💡 Inspect all open descriptors, offset cursors, pipe endpoints, and I/O bandwidth in the I/O Lab."
+        )
+        self.lbl_fd_hint.setWordWrap(True)
+        self.lbl_fd_hint.setStyleSheet("font-size: 11px; color: #94a3b8;")
+
+        self.inspect_io_btn = QPushButton("🗂️ Inspect File Descriptors in I/O Lab ➔")
+        self.inspect_io_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0284c7;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 11px;
+                padding: 6px 10px;
+                border-radius: 4px;
+                border: 1px solid #38bdf8;
+            }
+            QPushButton:hover {
+                background-color: #0369a1;
+            }
+            QPushButton:disabled {
+                background-color: #334155;
+                color: #64748b;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+        """)
+        self.inspect_io_btn.setEnabled(False)
+        self.inspect_io_btn.clicked.connect(self._on_inspect_io_clicked)
+
+        fd_form.addRow("<b>Standard Input (fd 0):</b>", self.lbl_fd_stdin)
+        fd_form.addRow(self.lbl_fd_hint)
+        fd_form.addRow(self.inspect_io_btn)
+
+        self.content_layout.addWidget(self.fd_group)
+
+        # ----------------------------------------------------
+        # 6. CPU Scheduling & Ticks Card
         # ----------------------------------------------------
         self.cpu_group = QGroupBox("⏱️ CPU Scheduling & Ticks (/proc/<pid>/stat)")
         cpu_form = QFormLayout(self.cpu_group)
@@ -535,8 +635,14 @@ class ProcessInspectorWidget(BaseVisualizer):
         scroll.setWidget(content)
         main_layout.addWidget(scroll)
 
+    def _on_inspect_io_clicked(self):
+        if self._current_process is not None:
+            self.inspect_io_requested.emit(self._current_process.pid)
+
     def clear_context(self):
         super().clear_context()
+        self._current_process = None
+        self.inspect_io_btn.setEnabled(False)
         self.name_label.setText("No process selected")
         self.state_badge.setText("Select a process in the table/tree to inspect its Linux kernel state.")
         self.lbl_pid.setText("-")
@@ -550,6 +656,7 @@ class ProcessInspectorWidget(BaseVisualizer):
         self.lbl_comm.setText("-")
         self.lbl_tty.setText("-")
         self.lbl_stdin.setText("-")
+        self.lbl_fd_stdin.setText("-")
         self.lbl_cwd.setText("-")
         self.lbl_cmdline.setText("-")
         self.lbl_cpu_pct.setText("-")
@@ -558,6 +665,8 @@ class ProcessInspectorWidget(BaseVisualizer):
         self.lbl_starttime.setText("-")
 
     def render_context(self, process: Process):
+        self._current_process = process
+        self.inspect_io_btn.setEnabled(True)
         self.name_label.setText(f"⚡ {process.command}  (PID {process.pid})")
         self.state_badge.setText(f"Linux Kernel State: <b>{process.state_description}</b>")
 
@@ -594,12 +703,14 @@ class ProcessInspectorWidget(BaseVisualizer):
         if process.tty:
             self.lbl_tty.setText(f"<code>{process.tty}</code> <span style='color: #888;'>(tty_nr: {process.tty_nr})</span>")
         else:
-            self.lbl_tty.setText(f"<span style='color: #888;'>None (tty_nr: {process.tty_nr}) — daemon / background / GUI</span>")
+            self.lbl_tty.setText(f"<span style='color: #888;'>None (tty_nr: {process.tty_nr})</span>")
 
         if process.stdin_target:
             self.lbl_stdin.setText(f"<code>{process.stdin_target}</code>")
+            self.lbl_fd_stdin.setText(f"<code>{process.stdin_target}</code>")
         else:
             self.lbl_stdin.setText("<span style='color: #888;'>None / inaccessible</span>")
+            self.lbl_fd_stdin.setText("<span style='color: #888;'>None / inaccessible</span>")
 
         self.lbl_cwd.setText(str(process.cwd) if process.cwd else "Unknown / restricted")
         self.lbl_cmdline.setText(process.cmdline)
@@ -618,19 +729,27 @@ class ProcessInspectorWidget(BaseVisualizer):
         self.lbl_starttime.setText(f"<code>{process.starttime:,} ticks after boot</code>")
 
 
-
 class ProcessLabWidget(QWidget):
     """
     Combined Process Lab Widget housing the ProcessTreeWidget, toolbar controls, and ProcessInspectorWidget.
+    Supports live freeze/pause, quick filter presets, selection pinning, and direct I/O lab jumps.
     """
+
+    inspect_io_requested = Signal(int)  # Emitted when inspecting process in I/O lab
+    process_selected = Signal(object)  # Emitted when a process is selected
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.is_paused: bool = False
+        self._cached_snapshot: tuple[dict[int, Process], int | None] | None = None
+        self._pinned_pid: int | None = None
+        self._is_pinned: bool = False
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # Toolbar: Search Bar + Inspector Toggle
+        # Toolbar: Search Bar + Filter Preset + Pause + Pin + Inspector Toggle
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(2, 2, 2, 2)
         toolbar.setSpacing(6)
@@ -638,7 +757,81 @@ class ProcessLabWidget(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("🔍 Filter multiple: sleep, cat, bash or 10228, pts/1...")
         self.search_edit.setClearButtonEnabled(True)
-        toolbar.addWidget(self.search_edit, 1)
+        toolbar.addWidget(self.search_edit, 2)
+
+        preset_lbl = QLabel("Filter:")
+        preset_lbl.setStyleSheet("font-size: 11px; color: #94a3b8; font-weight: bold;")
+        toolbar.addWidget(preset_lbl)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a;
+                color: #f8fafc;
+                selection-background-color: #334155;
+                selection-color: #38bdf8;
+            }
+        """)
+        self.preset_combo.addItem("All Processes", "all")
+        self.preset_combo.addItem("🐚 Focused Shell Tree", "shell_tree")
+        self.preset_combo.addItem(f"👤 My User Processes (UID {os.getuid()})", "user")
+        self.preset_combo.addItem("⚡ Active / Non-Idle", "active")
+        self.preset_combo.addItem("🏛️ Session Leaders", "session_leaders")
+        toolbar.addWidget(self.preset_combo)
+
+        self.pause_btn = QPushButton("⏸️ Pause Updates")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #cbd5e1;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton:checked {
+                background-color: #d97706;
+                color: #ffffff;
+                font-weight: bold;
+                border: 1px solid #fbbf24;
+            }
+        """)
+        toolbar.addWidget(self.pause_btn)
+
+        self.pin_btn = QPushButton("📌 Pin Selection")
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #cbd5e1;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton:checked {
+                background-color: #0284c7;
+                color: #ffffff;
+                font-weight: bold;
+                border: 1px solid #38bdf8;
+            }
+        """)
+        toolbar.addWidget(self.pin_btn)
 
         self.toggle_inspector_btn = QPushButton("👁️ Inspector")
         self.toggle_inspector_btn.setCheckable(True)
@@ -664,10 +857,49 @@ class ProcessLabWidget(QWidget):
         layout.addWidget(self.splitter, 1)
 
         # Connect signals
-        self.search_edit.textChanged.connect(self.tree_widget.apply_filter)
+        self.search_edit.textChanged.connect(self._on_search_text_changed)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        self.pause_btn.toggled.connect(self._on_pause_toggled)
+        self.pin_btn.toggled.connect(self._on_pin_toggled)
         self.toggle_inspector_btn.toggled.connect(self._toggle_inspector)
-        self.tree_widget.process_selected.connect(self.inspector_widget.set_context)
+        self.tree_widget.process_selected.connect(self._on_tree_process_selected)
+        self.tree_widget.process_double_clicked.connect(self._on_tree_double_clicked)
+        self.inspector_widget.inspect_io_requested.connect(self.inspect_io_requested)
 
+    def _on_tree_process_selected(self, process: Process):
+        self.inspector_widget.set_context(process)
+        if self._is_pinned:
+            self._pinned_pid = process.pid
+        self.process_selected.emit(process)
+
+    def _on_tree_double_clicked(self, process: Process):
+        self.inspect_io_requested.emit(process.pid)
+
+    def _on_search_text_changed(self, text: str):
+        self.tree_widget.apply_filter(query=text)
+
+    def _on_preset_changed(self, idx: int):
+        preset = self.preset_combo.currentData() or "all"
+        self.tree_widget.apply_filter(preset=preset)
+
+    def _on_pause_toggled(self, checked: bool):
+        self.is_paused = checked
+        if checked:
+            self.pause_btn.setText("▶️ Resume Updates")
+        else:
+            self.pause_btn.setText("⏸️ Pause Updates")
+            if self._cached_snapshot:
+                procs, f_pid = self._cached_snapshot
+                self.tree_widget.update_processes(procs, focused_pid=f_pid)
+
+    def _on_pin_toggled(self, checked: bool):
+        self._is_pinned = checked
+        if checked:
+            self._pinned_pid = self.tree_widget._selected_pid
+            self.pin_btn.setText("📌 Pinned")
+        else:
+            self._pinned_pid = None
+            self.pin_btn.setText("📌 Pin Selection")
 
     def _toggle_inspector(self, checked: bool):
         self.inspector_widget.setVisible(checked)
@@ -678,5 +910,11 @@ class ProcessLabWidget(QWidget):
         self.tree_widget.set_focused_pid(pid)
 
     def update_processes(self, processes: dict[int, Process], focused_pid: int | None = None):
+        self._cached_snapshot = (processes, focused_pid)
+        if self.is_paused:
+            return
+
         self.tree_widget.update_processes(processes, focused_pid=focused_pid)
+        if self._is_pinned and self._pinned_pid is not None and self._pinned_pid in processes:
+            self.tree_widget.select_pid(self._pinned_pid)
 

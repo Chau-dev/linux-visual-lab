@@ -247,6 +247,24 @@ class EventCardWidget(QFrame):
                 "text_color": "#eab308",
                 "border_color": "#ca8a04",
             },
+            "io.fd_appeared": {
+                "title": "🗂️ FD APPEARED",
+                "bg_color": "rgba(56, 189, 248, 0.2)",
+                "text_color": "#38bdf8",
+                "border_color": "#0284c7",
+            },
+            "io.fd_disappeared": {
+                "title": "🚪 FD DISAPPEARED",
+                "bg_color": "rgba(148, 163, 184, 0.2)",
+                "text_color": "#94a3b8",
+                "border_color": "#64748b",
+            },
+            "io.pipe_shared": {
+                "title": "🔗 PIPE SHARED",
+                "bg_color": "rgba(234, 179, 8, 0.2)",
+                "text_color": "#eab308",
+                "border_color": "#ca8a04",
+            },
         }
 
         return badges.get(
@@ -332,11 +350,47 @@ class EventCardWidget(QFrame):
             new_s = data.get("new_swap_used_kb", 0)
             return f"Swap reported usage changed: {old_s:,} kB ➔ {new_s:,} kB"
 
+        if event_type == "io.fd_appeared":
+            pid = data.get("pid", "?")
+            target = data.get("target", "?")
+            role = data.get("role", f"fd {data.get('fd', '?')}")
+            return f"PID {pid} opened {role} ➔ {target}"
+
+        if event_type == "io.fd_disappeared":
+            pid = data.get("pid", "?")
+            target = data.get("target", "?")
+            role = data.get("role", f"fd {data.get('fd', '?')}")
+            return f"PID {pid} closed {role} ({target})"
+
+        if event_type == "io.pipe_shared":
+            ino = data.get("pipe_inode", "?")
+            count = data.get("endpoints_count", 2)
+            return f"Observed {count} process endpoints sharing pipe:[{ino}]"
+
         return str(data)
 
     def _format_facts_summary(self, event_type: str, data: dict) -> str:
         """Format strictly observed structured facts."""
         facts: list[str] = []
+
+        if event_type in ("io.fd_appeared", "io.fd_disappeared"):
+            if "pid" in data:
+                facts.append(f"PID: {data['pid']}")
+            if "fd" in data:
+                facts.append(f"FD: {data['fd']}")
+            if "fd_type" in data:
+                facts.append(f"TYPE: {data['fd_type']}")
+            if "target" in data:
+                facts.append(f"TARGET: {data['target']}")
+            if "access_mode" in data:
+                facts.append(f"ACCESS_MODE: {data['access_mode']}")
+
+        elif event_type == "io.pipe_shared":
+            if "pipe_inode" in data:
+                facts.append(f"PIPE_INODE: {data['pipe_inode']}")
+            if "endpoints" in data:
+                for ep in data["endpoints"]:
+                    facts.append(f"• PID {ep['pid']} ({ep.get('command', '')}) fd {ep['fd']} [{ep['access_mode']} - {ep.get('role', '')}]")
 
         if event_type == "process.created":
             if "pid" in data:
@@ -458,6 +512,7 @@ class ActivityTimelineWidget(QWidget):
             "⚡ Process Subsystem (process.*)",
             "🐚 Shell & Terminal (shell.*)",
             "🧠 Memory Subsystem (memory.*)",
+            "🗂️ File Descriptors & I/O (io.*)",
         ])
         self.filter_combo.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.filter_combo)
@@ -568,6 +623,8 @@ class ActivityTimelineWidget(QWidget):
                 cat_match = event_type.startswith("shell.")
             elif filter_idx == 4:  # Memory (memory.*)
                 cat_match = event_type.startswith("memory.")
+            elif filter_idx == 5:  # File Descriptors & I/O (io.*)
+                cat_match = event_type.startswith("io.")
 
             # Search query check
             query_match = True
