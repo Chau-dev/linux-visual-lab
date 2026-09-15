@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shiboken6
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
@@ -166,10 +167,23 @@ class ProcessTreeWidget(QTreeWidget):
                 self.apply_filter(self._filter_query, self._filter_preset)
             return
 
-        # 1. Remove exited processes
-        for pid in (existing_pids - current_pids):
+        # 1. Remove exited processes (children first to avoid Qt deleting
+        #    child C++ objects when their parent item is removed)
+        pids_to_remove = existing_pids - current_pids
+        def _item_depth(pid):
+            """Return the tree depth so we remove leaves before parents."""
+            depth = 0
+            item = self._tree_items.get(pid)
+            if item is not None and shiboken6.isValid(item):
+                p = item.parent()
+                while p is not None:
+                    depth += 1
+                    p = p.parent()
+            return depth
+        sorted_pids_to_remove = sorted(pids_to_remove, key=_item_depth, reverse=True)
+        for pid in sorted_pids_to_remove:
             item = self._tree_items.pop(pid, None)
-            if item is not None:
+            if item is not None and shiboken6.isValid(item):
                 parent = item.parent()
                 if parent is not None:
                     parent.removeChild(item)
